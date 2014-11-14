@@ -303,7 +303,7 @@ sub create_sftp_acct () {
     my $correct = "N";
     my ($username, $fullname, $phone, $location, $business);
     while ( $correct !~ /[Yy]/ ) {
-        print "Create new account:\n";
+        print "Create new SFTP account:\n";
         print "-----------------------------------------------------------\n\n";
         print "Enter username: ";
         $username = <>; chomp $username;
@@ -328,12 +328,12 @@ sub create_sftp_acct () {
         $correct = <>;  chomp $correct;
     }  
     system("clear");
-    print "Creating account $username for $fullname ...\n";
+    print "Creating SFTP account $username for $fullname ...\n";
 
     my $homedir = "$ftphome/$username";
     my $filesdir = "$homedir/files";
 
-    system("sudo useradd -m -g $pgrp -d \"$homedir\" -c \"$fullname,$phone,$location,$business,USER,USER\" $username");
+    system("sudo useradd -m -s /bin/false -g $pgrp -d \"$homedir\" -c \"$fullname,$phone,$location,$business,USER,USER\" $username");
     system("sudo chown root:$ftpgrp \"$homedir\"");
     system("sudo chmod 755 \"$homedir\"");
 
@@ -343,8 +343,7 @@ sub create_sftp_acct () {
 
     system("sudo passwd $username");
 
-    print "\n\nAccount creation complete.  The user will be required to change\n";
-    print "their initial password.\n";
+    print "\n\nSFTP account creation complete.\n";
     print "\n\nPress enter to continue";
     my $ret = <>;
 }
