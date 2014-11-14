@@ -1,9 +1,12 @@
 #!/usr/bin/perl
+use warnings;
+use strict;
 use Data::Dumper;
 
 # Boolean value that represents whether this is a FACS system, otherwise it is assumed to be CUBS.
 my $isFacs = (-d "/cache");
 
+sub menu;
 sub cubs_user ();
 sub sel_user ();
 sub acct_detail ();
@@ -11,261 +14,359 @@ sub chg_acct_detail ();
 sub fix_acct ();
 sub unlock_acct ();
 sub create_acct ();
+sub create_sftp_acct ();
 sub rm_acct ();
 sub exit(@);
 
-while ( 1 ) {
-  my @USER = ();
-  menu();
+my %user;
+my $ijs = '/data/IJS';
+# Allow user creation?
+my $allowcreate = 1;
+# default account stuff
+my $pgrp = "cubs";
+my $ftpgrp = $pgrp;
+my $home = "/home/common";
+my $ftphome = "/home/ftp";
+my $sharedhome = 1;
+my $OS = $^O;
+
+while (1)
+{
+    menu();
 }
 
-sub menu () {
-  system("clear");
+sub menu {
+    system("clear");
 
-  if ($USER[0][0] =~ /\w\w+/) {
-    print "Selected User:  $USER[0][0] => " . (split(',',$USER[0][4]))[0] . "\n";
+    if (exists($user{name})) {
+        print "Selected User:  $user{name} => $user{comment}\n";
+        print "------------------------------------------------------------------\n\n";
+    }
+    else {
+        print "No user selected!  Please create or select a user to proceed\n";
+        print "------------------------------------------------------------------\n\n";
+    }
+    my @routines;
+
+    # routines are loaded as a list of hashes.  Description is self-explanatory, needsUser routines will only run if a user is selected,
+    # routine contains a code reference to a sub or a lambda.  This allows routines to be easily and flexibly added and removed.
+    push(@routines, { description => "Select User", needsUser => 0, routine => \&sel_user });
+    if ($OS eq 'aix')
+    {
+        push(@routines, { description => "View User Account Details", needsUser => 1, routine => \&acct_detail });
+        push(@routines, { description => "Change User Account Details", needsUser => 1, routine => \&chg_acct_detail });
+        push(@routines, { description => "Reset password and unlock account", needsUser => 1, routine => \&fix_acct });
+        push(@routines, { description => "Unlock account without resetting password", needsUser => 1, routine => \&unlock_acct });
+    }
+    push(@routines, { description => "Create new account", needsUser => 0, routine => \&create_acct });
+    push(@routines, { description => "Create sftp account", needsUser => 0, routine => \&create_sftp_acct });
+    push(@routines, { description => "Remove user account", needsUser => 1, routine => \&rm_acct });
+    if (defined($ijs) && (length($ijs) > 0))
+    {
+        push(@routines, { description => "Manage CU TCS users", needsUser => 0, routine => \&cubs_user });
+    }
+    push(@routines, { description => "Exit\n", needsUser => 0, routine => \&exit });
+
+    # print routines
+    for (my $i = 0; $i < scalar(@routines); $i++)
+    {
+        print(($i + 1) . ") " . $routines[$i]->{description} . "\n");
+    }
+
     print "------------------------------------------------------------------\n\n";
-  }
-  else {
-    print "No user selected!  Please select a user or choose option 1 \n";
-    print "or option 6 to proceed.\n";
-    print "------------------------------------------------------------------\n\n";
-  }
-  my @routines;
+    print "Select Option(default: 1): ";
 
-  # routines are loaded as a list of hashes.  Description is self-explanatory, needsUser routines will only run if a user is selected,
-  # routine contains a code reference to a sub or a lambda.  This allows routines to be easily and flexibly added and removed.
-  push(@routines, { description => "Select User", needsUser => 0, routine => \&sel_user });
-  push(@routines, { description => "View User Account Details", needsUser => 1, routine => \&acct_detail });
-  push(@routines, { description => "Change User Account Details", needsUser => 1, routine => \&chg_acct_detail });
-  push(@routines, { description => "Reset password and unlock account", needsUser => 1, routine => \&fix_acct });
-  push(@routines, { description => "Unlock account without resetting password", needsUser => 1, routine => \&unlock_acct });
-  push(@routines, { description => "Create new account", needsUser => 0, routine => \&create_acct });
-  push(@routines, { description => "Remove user account", needsUser => 1, routine => \&rm_acct });
-  push(@routines, { description => "Manage CU TCS users", needsUSer => 0, routine => \&cubs_user });
-  push(@routines, { description => "Exit\n", needsUser => 0, routine => \&exit });
+    my $opt = <>;
+    chomp $opt;
 
-  # print routines
-  for (my $i = 0; $i < scalar(@routines); $i++)
-  {
-      print(($i + 1) . ") " . $routines[$i]->{description} . "\n");
-  }
+    # iff (input is a digit) && (input is > 1) && (input does not exceed list length)
+    if (($opt =~ m/^\d+$/) && ($opt > 0) && ($opt <= scalar(@routines)))
+    {
+        # options are listed starting at 1, but list is 0-indexed
+        $opt--;
 
-  print "------------------------------------------------------------------\n\n";
-  print "Select Option(default: 1): ";
-
-  my $opt = <>;
-  chomp $opt;
-
-  # iff (input is a digit) && (input is > 1) && (input does not exceed list length)
-  if (($opt =~ m/^\d+$/) && ($opt > 0) && ($opt <= scalar(@routines)))
-  {
-      # options are listed starting at 1, but list is 0-indexed
-      $opt--;
-
-      # If user is not needed, proceed, otherwise check for user
-      if ((!$routines[$opt]->{needsUser}) || ($USER[0][0] =~ m/\w\w+/))
-      {
-          # execute code reference
-          &{$routines[$opt]->{routine}}();
-      }
-  }
+        # If user is not needed, proceed, otherwise check for user
+        if ((!$routines[$opt]->{needsUser}) || exists($user{name}))
+        {
+            # execute code reference
+            &{$routines[$opt]->{routine}}();
+        }
+    }
 }
 
 sub cubs_user () {
-  system('cd /data/IJS; /uv/bin/uv "RUN IJS.BP CREATE.USER"');
+    system("cd '$ijs'; /uv/bin/uv 'RUN IJS.BP CREATE.USER'");
 }
 
 sub sel_user () {
-  print "\nEnter username or search string: ";
-  my $search_str = <>;
-  chomp($search_str);
-  open(PASSWD,"/etc/passwd");
-  my @match = ();
-  while ( <PASSWD> ) {
-    my $line = $_;
-    if ($line =~ m/$search_str/ ) {
-      push @match, [ split /:/ ];
+    print "\nEnter username or search string: ";
+    my $search_str = <>;
+    chomp($search_str);
+    open(my $passwd,"/etc/passwd");
+    my @passwdLines = <$passwd>;
+    chomp(@passwdLines);
+    my @matches = grep(/$search_str/, @passwdLines);
+
+    close($passwd);
+    system("clear");
+    if (scalar(@matches) > 0)
+    {
+        for my $i (0..$#matches) {
+            my $match = $matches[$i];
+            my @fields = split(':', $match);
+            my $name = $fields[0];
+            my $fullname = $fields[4];
+
+            print "$i) $name\t" . (split(',', $fullname))[0] . "\n";
+        }
+        print "Select user index: ";
+        my $usr_index = <>;
+        chomp $usr_index;
+        ($user{name}, $user{password}, $user{uid}, $user{gid}, $user{comment}, $user{home}, $user{shell}) = split(':', $matches[$usr_index]);
+    } else
+    {
+        print "NO MATCHES FOUND FOR SEARCH OF '$search_str'\n";
+        print "\n\nPress enter to continue";
+        my $ret = <>;
     }
-  }
-  close(PASSWD);
-  system("clear");
-  for my $i (0..$#match) {
-    print "$i) $match[$i][0]\t" . (split(',',$match[$i][4]))[0] . "\n";
-  }
-  print "Select user index: ";
-  my $usr_index = <>; chomp $usr_index;
-  @USER = $match[$usr_index];
 }
 
 sub acct_detail () {
-  my @lsuser = split(' ',`sudo lsuser $USER[0][0]`);
-  #print Dumper(@lsuser);
-  my $username = shift @lsuser;
-  my %userdetail;
-  foreach my $user (@lsuser) {
-    chomp;
-    @el = split("=",$user);
-    if ($#el > 0) {
-      $userdetail{$el[0]} = $el[1];
+    my @lsuser = split(' ',`sudo lsuser $user{name}`);
+    my $username = shift @lsuser;
+    my %userdetail;
+    foreach my $user (@lsuser) {
+        chomp;
+        my @el = split("=",$user);
+        if ($#el > 0) {
+            $userdetail{$el[0]} = $el[1];
+        }
     }
-  }
-  system("clear");
-  print "username:                 $username\n";
-  print "primary group:            $userdetail{'pgrp'}\n";
-  print "groups:                   $userdetail{'groups'}\n";
-  print "shell:                    $userdetail{'shell'}\n";
-  print "home:                     $userdetail{'home'}\n";
-  print "login:                    $userdetail{'login'}\n";
-  print "account locked:           $userdetail{'account_locked'}\n";
-  print "unsuccessful login count: $userdetail{'unsuccessful_login_count'}\n";
-  print "last successful login:    " . scalar(localtime($userdetail{'time_last_login'})) . "\n";
-  print "last unsuccessful login:  " . scalar(localtime($userdetail{'time_last_unsuccessful_login'})) . "\n";
-  print "Press enter to continue: ";
-  my $input = <>;
+    system("clear");
+    print "username:                 $username\n";
+    print "primary group:            $userdetail{'pgrp'}\n";
+    print "groups:                   $userdetail{'groups'}\n";
+    print "shell:                    $userdetail{'shell'}\n";
+    print "home:                     $userdetail{'home'}\n";
+    print "login:                    $userdetail{'login'}\n";
+    print "account locked:           $userdetail{'account_locked'}\n";
+    print "unsuccessful login count: $userdetail{'unsuccessful_login_count'}\n";
+    print "last successful login:    " . scalar(localtime($userdetail{'time_last_login'})) . "\n";
+    print "last unsuccessful login:  " . scalar(localtime($userdetail{'time_last_unsuccessful_login'})) . "\n";
+    print "Press enter to continue: ";
+    my $input = <>;
 }
 
 sub chg_acct_detail () {
-  system("clear");
+    system("clear");
 
-  my @lsuser = split(' ',`sudo lsuser $USER[0][0]`);
-  my $username = shift @lsuser;
-  my %userdetail;
+    my @lsuser = split(' ',`sudo lsuser $user{name}`);
+    my $username = shift @lsuser;
+    my %userdetail;
 
-  foreach my $user (@lsuser) {
-    chomp;
-    @el = split("=",$user);
-    if ($#el > 0) {
-      $userdetail{$el[0]} = $el[1];
+    foreach my $user (@lsuser) {
+        chomp;
+        my @el = split("=",$user);
+        if ($#el > 0) {
+            $userdetail{$el[0]} = $el[1];
+        }
     }
-  }
 
-  my %details;
+    my %details;
 
-  my $correct = "N";
+    my $correct = "N";
 
-  while ( $correct !~ /[Yy]/ ) {
-    %details = %userdetail;
-    my $input;
-    print "Modify account $username:\n";
-    print "Enter nothing to keep default\n";
-    print "primary group [$details{pgrp}]: ";
-    $input = <>;  chomp $input;
-    $details{pgrp} = $input if ($input ne "");
-    print "groups [$details{groups}]: ";
-    $input = <>;  chomp $input;
-    $details{groups} = $input if ($input ne "");
-    print "shell [$details{shell}]: ";
-    $input = <>;  chomp $input;
-    $details{shell} = $input if ($input ne "");
-    print "home [$details{home}]:\n";
-    $input = <>;  chomp $input;
-    $details{home} = $input if ($input ne "");
-    print "-----------------------------------------------------------\n\n";
-    print "username:                 $username\n";
-    print "primary group:            $details{'pgrp'}\n";
-    print "groups:                   $details{'groups'}\n";
-    print "shell:                    $details{'shell'}\n";
-    print "home:                     $details{'home'}\n";
-    print "-----------------------------------------------------------\n\n";
-    print "Is this correct? (Y|N) ";
-    $correct = <>;  chomp $correct;
-  }  
-  system("sudo chuser 'pgrp=$details{pgrp}' 'groups=$details{groups}' 'shell=$details{shell}' 'home=$details{home}' $username");
+    while ( $correct !~ /[Yy]/ ) {
+        %details = %userdetail;
+        my $input;
+        print "Modify account $username:\n";
+        print "Enter nothing to keep default\n";
+        print "primary group [$details{pgrp}]: ";
+        $input = <>;  chomp $input;
+        $details{pgrp} = $input if ($input ne "");
+        print "groups [$details{groups}]: ";
+        $input = <>;  chomp $input;
+        $details{groups} = $input if ($input ne "");
+        print "shell [$details{shell}]: ";
+        $input = <>;  chomp $input;
+        $details{shell} = $input if ($input ne "");
+        print "home [$details{home}]:\n";
+        $input = <>;  chomp $input;
+        $details{home} = $input if ($input ne "");
+        print "-----------------------------------------------------------\n\n";
+        print "username:                 $username\n";
+        print "primary group:            $details{'pgrp'}\n";
+        print "groups:                   $details{'groups'}\n";
+        print "shell:                    $details{'shell'}\n";
+        print "home:                     $details{'home'}\n";
+        print "-----------------------------------------------------------\n\n";
+        print "Is this correct? (Y|N) ";
+        $correct = <>;  chomp $correct;
+    }  
+    system("sudo chuser 'pgrp=$details{pgrp}' 'groups=$details{groups}' 'shell=$details{shell}' 'home=$details{home}' $username");
 
-  acct_detail();
+    acct_detail();
 }
 
 sub fix_acct () {
-  print "Resetting account: $USER[0][0] for " . (split(',',$USER[0][4]))[0] . "\n";
-  system("sudo chuser unsuccessful_login_count=0 account_locked=false $USER[0][0]");
-  system("sudo passwd $USER[0][0]");
-  print "\nForce password change? (Y|N):";
-  my $chpw = <>; chomp $chpw;
-  if ($chpw =~ /[Nn]/) {
-    system("sudo pwdadm -c $USER[0][0]");
-  }
-  print "\nUser Successfully Updated!\n";
-  print "\nPress Enter to Continue\n";
-  my $v = <>;
+    print "Resetting account: $user{name} for " . (split(',', $user{comment}))[0] . "\n";
+    system("sudo chuser unsuccessful_login_count=0 account_locked=false $user{name}");
+    system("sudo passwd $user{name}");
+    print "\nForce password change? (Y|N):";
+    my $chpw = <>; chomp $chpw;
+    if ($chpw =~ /[Nn]/) {
+        system("sudo pwdadm -c $user{name}");
+    }
+    print "\nUser Successfully Updated!\n";
+    print "\nPress Enter to Continue\n";
+    my $v = <>;
 }
 
 sub unlock_acct () {
-  print "Unlocking account: $USER[0][0] for " . (split(',',$USER[0][4]))[0] . "\n";
-  system("sudo chuser unsuccessful_login_count=0 account_locked=false $USER[0][0]");
-  print "\nUser Successfully Unlocked!\n";
-  print "\nPress Enter to Continue\n";
-  my $v = <>;
+    print "Unlocking account: $user{name} for " . (split(',', $user{comment}))[0] . "\n";
+    system("sudo chuser unsuccessful_login_count=0 account_locked=false $user{name}");
+    print "\nUser Successfully Unlocked!\n";
+    print "\nPress Enter to Continue\n";
+    my $v = <>;
 }
 
 sub create_acct () {
-  system("clear");
-  #---------------- Uncomment These 3 Lines to disable the ability to create new accts. ------
-  #print "THIS OPTION NO LONGER SUPPORTED.  PLEASE CREATE NEW USERS VIA Active Directory.\n";
-  #my $c = <>;
-  #return();
-  #-------------------------------------------------------------------------------------------
-  # gecos=AARON X ROBINSON,999999999,LOUISVILLE,MEDASSIST,USER,USER
-  $correct = "N";
-  while ( $correct !~ /[Yy]/ ) {
-    print "Create new account:\n";
-    print "-----------------------------------------------------------\n\n";
-    print "Enter username: ";
-    $username = <>; chomp $username;
-    print "Enter Full Name: ";
-    $fullname = <>; chomp $fullname;
-    print "Enter Phone Number: ";
-    $phone = <>; chomp $phone;
-    print "Enter Location: ";
-    $location = <>; chomp $location;
-    print "Enter Business Unit: ";
-    $business = <>; chomp $business;
-    print "\n\n-----------------------------------------------------------\n\n";
-    print "Please confim user details:\n";
-    print "-----------------------------------------------------------\n\n";
-    print "Username:  $username\n";
-    print "Fullname:  $fullname\n";
-    print "Phone:     $phone\n";
-    print "Location:  $location\n";
-    print "Business:  $business\n";
-    print "-----------------------------------------------------------\n\n";
-    print "Is this correct? (Y|N) ";
-    $correct = <>;  chomp $correct;
-  }  
-  system("clear");
-  print "Creating account $username for $fullname ...\n";
-  if ($isFacs)
-  {
-      system("sudo mkuser gecos=\"$fullname,$phone,$location,$business,USER,USER\" $username");
-  } else
-  {
-      system("sudo mkuser pgrp=cubs home=/home/common gecos=\"$fullname,$phone,$location,$business,USER,USER\" $username");
-  }
-  system("sudo passwd $username");
-  print "\n\nAccount creation complete.  The user will be required to change\n";
-  print "their initial password.\n";
-  print "\n\nPress enter to continue";
-  $ret = <>;
+    system("clear");
+    unless ($allowcreate)
+    {
+        print "THIS OPTION NO LONGER SUPPORTED.  PLEASE CREATE NEW USERS VIA Active Directory.\n";
+        my $c = <>;
+        return();
+    }
+    my $correct = "N";
+    my ($username, $fullname, $phone, $location, $business);
+    while ( $correct !~ /[Yy]/ ) {
+        print "Create new account:\n";
+        print "-----------------------------------------------------------\n\n";
+        print "Enter username: ";
+        $username = <>; chomp $username;
+        print "Enter Full Name: ";
+        $fullname = <>; chomp $fullname;
+        print "Enter Phone Number: ";
+        $phone = <>; chomp $phone;
+        print "Enter Location: ";
+        $location = <>; chomp $location;
+        print "Enter Business Unit: ";
+        $business = <>; chomp $business;
+        print "\n\n-----------------------------------------------------------\n\n";
+        print "Please confim user details:\n";
+        print "-----------------------------------------------------------\n\n";
+        print "Username:  $username\n";
+        print "Fullname:  $fullname\n";
+        print "Phone:     $phone\n";
+        print "Location:  $location\n";
+        print "Business:  $business\n";
+        print "-----------------------------------------------------------\n\n";
+        print "Is this correct? (Y|N) ";
+        $correct = <>;  chomp $correct;
+    }  
+    system("clear");
+    print "Creating account $username for $fullname ...\n";
+    if ($isFacs)
+    {
+        system("sudo useradd -c \"$fullname,$phone,$location,$business,USER,USER\" $username");
+    } else
+    {
+        my $homedir;
+        my $opts;
+        if ($sharedhome)
+        {
+            $homedir = $home;
+            $opts = '';
+        } else
+        {
+            $homedir = "$home/$username";
+            $opts = '-m';
+        }
+        system("sudo useradd $opts -g $pgrp -d \"$homedir\" -c \"$fullname,$phone,$location,$business,USER,USER\" $username");
+    }
+    system("sudo passwd $username");
+    print "\n\nAccount creation complete.  The user will be required to change\n";
+    print "their initial password.\n";
+    print "\n\nPress enter to continue";
+    my $ret = <>;
+}
+
+sub create_sftp_acct () {
+    system("clear");
+    unless ($allowcreate)
+    {
+        print "THIS OPTION NO LONGER SUPPORTED.  PLEASE CREATE NEW USERS VIA Active Directory.\n";
+        my $c = <>;
+        return();
+    }
+    my $correct = "N";
+    my ($username, $fullname, $phone, $location, $business);
+    while ( $correct !~ /[Yy]/ ) {
+        print "Create new account:\n";
+        print "-----------------------------------------------------------\n\n";
+        print "Enter username: ";
+        $username = <>; chomp $username;
+        print "Enter Full Name: ";
+        $fullname = <>; chomp $fullname;
+        print "Enter Phone Number: ";
+        $phone = <>; chomp $phone;
+        print "Enter Location: ";
+        $location = <>; chomp $location;
+        print "Enter Business Unit: ";
+        $business = <>; chomp $business;
+        print "\n\n-----------------------------------------------------------\n\n";
+        print "Please confim user details:\n";
+        print "-----------------------------------------------------------\n\n";
+        print "Username:  $username\n";
+        print "Fullname:  $fullname\n";
+        print "Phone:     $phone\n";
+        print "Location:  $location\n";
+        print "Business:  $business\n";
+        print "-----------------------------------------------------------\n\n";
+        print "Is this correct? (Y|N) ";
+        $correct = <>;  chomp $correct;
+    }  
+    system("clear");
+    print "Creating account $username for $fullname ...\n";
+
+    my $homedir = "$ftphome/$username";
+    my $filesdir = "$homedir/files";
+
+    system("sudo useradd -m -g $pgrp -d \"$homedir\" -c \"$fullname,$phone,$location,$business,USER,USER\" $username");
+    system("sudo chown root:$ftpgrp \"$homedir\"");
+    system("sudo chmod 755 \"$homedir\"");
+
+    system("sudo mkdir \"$filesdir\"");
+    system("sudo chown $username:$ftpgrp \"$filesdir\"");
+    system("sudo chmod 700 \"$filesdir\"");
+
+    system("sudo passwd $username");
+
+    print "\n\nAccount creation complete.  The user will be required to change\n";
+    print "their initial password.\n";
+    print "\n\nPress enter to continue";
+    my $ret = <>;
 }
 
 sub rm_acct () {
-  system("clear");
-  print "##################################################################\n";
-  print "ABOUT TO REMOVE USER ACCCOUNT!!!\n";
-  print "##################################################################\n\n";
-  
-  print "Enter Y to confirm account removal for user $USER[0][0]: ";
-  my $con = <>; chomp $con;
-  if ($con eq "Y") {
-    system("sudo rmuser $USER[0][0]");
-    print "\n\nUser: $USER[0][0] removed from AIX.\n";
-    undef @USER;
-  }
-  else {
-    print "\n\nYou did not enter Y, returning to main menu without removing user.\n";
-  }
-  print "\nPress enter to continue ";
-  $ret = <>;
+    system("clear");
+    print "##################################################################\n";
+    print "ABOUT TO REMOVE USER ACCCOUNT!!!\n";
+    print "##################################################################\n\n";
+
+    print "Enter Y to confirm account removal for user $user{name}: ";
+    my $con = <>; chomp $con;
+    if ($con eq "Y") {
+        system("sudo userdel $user{name}");
+        print "\n\nUser: $user{name} removed from $OS.\n";
+        undef %user;
+    }
+    else {
+        print "\n\nYou did not enter Y, returning to main menu without removing user.\n";
+    }
+    print "\nPress enter to continue ";
+    my $ret = <>;
 }
 
 sub exit(@) {
