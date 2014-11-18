@@ -1,0 +1,1151 @@
+#!/bin/sh
+# logbkup
+# (If renamed, change its name in POD, too)
+# Manage Informix Dynamic Server 9.4 logical log backup files
+#  between production and disaster recovery systems
+# Copyright (c) 2010 Absolute Performance Inc., LLC. All rights reserved.
+
+# echo "this command has been disabled"; exit;
+# this is a multilanguage script:
+#   1. a shell script to set up the environment
+. /API/ids
+case $(hostname | cut -d . -f 1) in
+   v1100)
+      perl=/usr/opt/perl5/bin/perl
+   ;;
+   v11100)
+      perl=/usr/opt/perl5/bin/perl
+   ;;
+   v611100)
+      perl=/usr/opt/perl5/bin/perl
+   ;;
+   *)
+      perl=/usr/bin/perl  
+   ;;
+esac
+exec $perl -x -S $0 ${1+"$@"}
+#   2. A Perl script to do the work
+#!perl
+# kluge: align Perl line number so the line after the next line is...
+# line 28
+
+use warnings;
+use strict;
+use FindBin qw{$Bin};
+use lib "$Bin/../lib"; # ApiIdsPha module is in a sibling dir to us
+use ApiIdsPha;
+use English qw{-no_match_vars};
+use Expect;
+use Fcntl qw{:mode};
+use File::Listing qw{parse_dir};
+use File::Spec::Functions qw{splitpath};
+use File::stat;
+use Getopt::Long;
+use IO::Dir;
+use List::Util qw{max};
+use Net::Domain qw{hostname hostfqdn};
+use Pod::Usage;
+#use Data::Dumper;
+#$Data::Dumper::Terse = 1;
+#$Data::Dumper::Sortkeys = 1;
+#$Data::Dumper::Indent = 3;
+sub create_logical_log_backup;
+sub copy_logical_log_backup;
+sub get_remote_logical_log_backup_files; 
+sub copy_logs_to_remote_system;
+sub submit_logapply_job;
+
+my $version = '2.2'; # don't forget to change the imbedded POD, too
+
+# These are on the remote (disaster recovery) system
+# name and path of logapply
+my $logapply_name = 'logapply';
+my $logapply_path = '/API/bin/logapply';
+
+# Maximum difference between level-0 physical backup file and logical log backup file,
+# in seconds. Logical log backups are kept until they are more 
+# than this much older than the level-0 physical backup file.
+# The value is 36 hours
+my $max_time_diff = 3600 * 36;
+
+# $ontape_timeout is how long Expect should wait for a match before quitting
+# This must be great enough for ontape to create a logical log backup file.
+# The value is 20 minutes
+my $ontape_timeout = 60 * 20;
+
+# $sleepy_time is how long to delay responding to a prompt in Expect code
+# There is some anecdotal evidence that immediate responses to IDS ontape
+# queries causes it to become confused.
+# The value is 1 seconds
+my $sleepy_time = 1;
+
+# IDS server modes reported by onstat -
+my $ids_fast_recovery = 'Fast Recovery';
+my $ids_fast_recovery_ckpt_req = 'Fast Recovery (CKPT REQ)';
+my $ids_quiescent = 'Quiescent';
+my $ids_on_line = 'On-Line';
+
+# Logical log backup file name format is: Log_L_L.gz
+#  where "L" represents the logical log number from ontape
+#  with 10 digits (this pattern occurs 1 or 2 times)
+# Used to match logical log backup file name
+my $log_match_regex =
+   qr{
+      \A                # beginning of string
+      Log_              # literal
+      (\d{10})          # (capture) ten digits
+      (?:_(\d{10}))?    # optional, _ and (capture) ten digits
+      (?:\.gz)?         # optional .gz
+      \Z                # end of string
+   }ox;
+# Used to generate logical log backup file name
+my $logical_log_backup_prefix = 'Log'; 
+my $log_number_format = '_%10.10d';
+my $gzip_suffix = '.gz';
+
+my (undef, undef, $progname) = splitpath $0;
+#my $hostname = hostname();
+my $hostname = `hostname`;
+chomp $hostname;
+my $username = getpwuid $EUID;
+
+# validate command line options
+my ($help_opt, $man_opt, $version_opt, $verbose_opt, $test_opt,) = (0, 0, 0, 0, 0,);
+my ($print_opt, $log_opt, $quiet_opt, $mail_opt, ) = (1, 1, 0, 0,);
+my $ssh_opt = 1;
+my $backup_opt = 1;
+my $current_opt = 0;
+my $zip_opt = 1;
+my $copy_logs_opt = 0;
+my $apply_opt = 0;
+my $delete_opt = 1;
+GetOptions(
+   'help|?' => \$help_opt,
+   'man' => \$man_opt,
+   'version' => \$version_opt,
+   'backup!' => \$backup_opt,
+   'current!' => \$current_opt,
+   'zip!' => \$zip_opt,
+   'delete!' => \$delete_opt,
+   'apply!' => \$apply_opt,
+   'copy!' => \$copy_logs_opt,
+   'ssh!' => \$ssh_opt,
+   'log!' => \$log_opt,
+   'print!' => \$print_opt,
+   'quiet' => \$quiet_opt,
+   'mail!' => \$mail_opt,
+   'test' => \$test_opt,
+   'verbose' => \$verbose_opt,
+) or pod2usage 'Errors were found in the command options.';
+if ($version_opt) {
+   print "$progname version $version\n";
+   exit 1;
+} 
+pod2usage '-verbose' => 2
+   if $man_opt;
+pod2usage
+   if $help_opt;
+
+# quiet option forces off all normal output
+$verbose_opt = $log_opt = $print_opt = 0 if $quiet_opt;
+# don't write to log file if in test mode
+$log_opt = 0 if $test_opt;
+
+# mail and remote host parameters
+my $remote_host;
+my $you_are_here = 0;
+set_mail_from $username . '@' . hostfqdn();
+set_mail_subject "$hostname: $progname status";
+if ($hostname eq 'quattrof14') {
+   $you_are_here = 1;
+   $remote_host = 'miata';
+   set_mail_host $hostname;
+   set_mail_to(
+      'bart@idmcnet.com',
+   );
+} elsif ($hostname eq 'miata') {
+   $you_are_here = 1;
+   $remote_host = 'quattrof14';
+   set_mail_host $hostname;
+   set_mail_to(
+      'bart@idmcnet.com',
+   );
+} elsif ($hostname eq 'v11100') {
+   $you_are_here = 1;
+   $remote_host = 'v1100';
+   set_mail_host 'crpexca02';
+   set_mail_to(
+      'helpdesk@integramed.com',
+      'csteam@absolute-performance.com',
+   );
+   set_mail_cc(
+      'ccs@absolute-performance.com',
+      'bws@absolute-performance.com',
+   );
+} elsif ($hostname eq 'v1100') {
+   $you_are_here = 1;
+   $remote_host = 'v11100';
+   set_mail_host 'crpexca02';
+   set_mail_to(
+      'helpdesk@integramed.com',
+      'csteam@absolute-performance.com',
+   );
+   set_mail_cc(
+      'ccs@absolute-performance.com',
+      'bws@absolute-performance.com',
+   );
+} elsif ($hostname eq 'v611100') {
+   $you_are_here = 1;
+   $remote_host = 'v11100';
+   set_mail_host 'crpexca02';
+   set_mail_to(
+      'helpdesk@integramed.com',
+      'csteam@absolute-performance.com',
+   );
+   set_mail_cc(
+      'ccs@absolute-performance.com',
+      'bws@absolute-performance.com',
+   );
+} else {
+   set_mail_host 'localhost';
+   set_mail_to('root');
+}
+
+set_shared_variables({
+   hostname          => $hostname,
+   progname          => $progname,
+   test_opt          => $test_opt,
+   print_opt         => $print_opt,
+   log_opt           => $log_opt,
+   mail_opt          => $mail_opt,
+   verbose_opt       => $verbose_opt,
+   log_match_regex   => $log_match_regex,
+}); 
+log_die "Hostname \"$hostname\" is unknown to $progname"
+   unless $you_are_here;
+set_signal_data;
+get_set_environment_variables;
+
+my $at_name = 'at';
+my $at_path = locate_cmd($at_name);
+my $at_output = '2>&1';
+my $cp_name = 'cp';
+my $cp_path = locate_cmd($cp_name);
+my $cp_opt = '-p';
+my $cp_output = '2>&1';
+my $gzip_name = 'gzip';
+my $gzip_path = locate_cmd($gzip_name);
+my $gzip_opt = '-c';
+my $gzip_output = '2>&1';
+my $ls_name = 'ls';
+my $ls_path  = locate_cmd($ls_name);
+my $ls_opt = '-l';
+my $ls_output = '2>&1';
+my $ontape_name = 'ontape';
+my $ontape_path = locate_cmd($ontape_name);
+my ($rshell_name, $rcopy_name, $rcopy_opt);
+if ($ssh_opt) {
+   $rshell_name = 'ssh';
+   $rcopy_name = 'scp';
+   $rcopy_opt = '-pq';
+} else {
+   $rshell_name = 'rsh';
+   $rcopy_name = 'rcp';
+   $rcopy_opt = '-p';
+}
+my $rshell_path = locate_cmd($rshell_name);
+my $rcopy_path = locate_cmd($rcopy_name);
+my $rcopy_output = '2>&1';
+my $lang_kluge = 'LANG=en_US';
+
+my $NO_LOG_DATA = '(no log data)';
+my $PARTIAL_LOG = '(partial)';
+
+my %onconfig_parms;
+parse_onconfig(\%onconfig_parms);
+my (
+   undef,
+   $ids_logical_log_backup_dir,
+   $ids_logical_log_backup_name,
+   $ids_logical_log_backup_real_dir,
+   ) = validate_ltapedev(\%onconfig_parms);
+my (
+   $ids_physical_backup_pathname,
+   undef,
+   undef,
+   $ids_physical_backup_mtime,
+   $ids_physical_backup_size,
+   $ids_physical_backup_real_pathname,
+   $ids_physical_backup_zip_pathname, 
+   $ids_physical_backup_zip_mtime,
+   $ids_physical_backup_zip_size,
+   ) = validate_tapedev(\%onconfig_parms);
+# use gzipped level-0 physical backup file only if it has a newer modification
+#   time than the uncompressed one or if the uncompressed one is empty
+my $ids_physical_backup_used_pathname;
+my $ids_physical_backup_used_mtime;
+my $use_gzipped_ids_physical_backup;
+if (defined($ids_physical_backup_zip_pathname) and
+   ( $ids_physical_backup_zip_mtime > $ids_physical_backup_mtime or
+     $ids_physical_backup_size == 0 )
+   ) {
+   $use_gzipped_ids_physical_backup = 1;
+   $ids_physical_backup_used_pathname = $ids_physical_backup_zip_pathname;
+   $ids_physical_backup_used_mtime = $ids_physical_backup_zip_mtime;
+} else {
+   $use_gzipped_ids_physical_backup = 0;
+   $ids_physical_backup_used_pathname = $ids_physical_backup_real_pathname;
+   $ids_physical_backup_used_mtime = $ids_physical_backup_mtime;
+}
+
+chdir $ids_logical_log_backup_real_dir
+   or log_die 'Unable to set current directory to ',
+          "$ids_logical_log_backup_real_dir ($OS_ERROR)";
+
+umask 0007;     # make all files output from this rw-rw----
+my $exit_code = 0;
+set_running_state;
+start_logging "${progname}.log";
+log_print
+   "Physical backup file",
+   "Onconfig:    $ids_physical_backup_pathname",
+   ($ids_physical_backup_real_pathname eq $ids_physical_backup_pathname ? () :
+      "Real target: $ids_physical_backup_real_pathname"),
+   "  Modification time is " . display_time($ids_physical_backup_mtime),
+   "  Size is " . $ids_physical_backup_size,
+   (defined($ids_physical_backup_zip_pathname) ?
+      ("Gzipped:     $ids_physical_backup_zip_pathname",
+      "  Modification time is " . display_time($ids_physical_backup_zip_mtime),
+      "  Size is " . $ids_physical_backup_zip_size,
+      ) : ()),
+   "Used:        $ids_physical_backup_used_pathname",
+   "Logical log backup directory is $ids_logical_log_backup_dir",
+   ($ids_logical_log_backup_real_dir eq $ids_logical_log_backup_dir ? () :
+      "Real target: $ids_logical_log_backup_real_dir"),
+   "Using remote shell $rshell_name",
+   "Using remote copy $rcopy_name",
+   "Remote (Disaster Recovery) system address is $remote_host",
+   if $verbose_opt;
+
+my @created_logs;    # array of beginning and ending logical log numbers from ontape
+my @local_logs;      # array of names of log files
+my %local_log_attrs; # hash keyed by log file name, data is anon hash of size and mtime
+my %remote_logs;     # hash keyed by log file name, data is size
+my $files_created = 0;
+my $files_copied = 0;
+my $files_deleted = 0;
+my $backup_log_error;
+
+my $ids_mode = get_ids_mode;
+if ($backup_opt and not
+   (
+   $ids_mode =~ m{^$ids_on_line}o
+   or
+   $ids_mode =~ m{^$ids_quiescent}o
+   )
+   ) {
+   $backup_opt = $copy_logs_opt = $delete_opt = $apply_opt = 0;
+   $exit_code = 1;
+   log_warn "Cannot back up logical logs; IDS is in $ids_mode mode";
+   log_print 'Setting --nobackup --nocopy, --nodelete and --noapply options';
+}
+
+if ($backup_opt) {
+   if (create_logical_log_backup \@created_logs) {
+      $files_created++;
+      copy_logical_log_backup \@created_logs;
+   }
+} else {
+   log_print 'Backup of logical logs skipped per --nobackup option';
+}
+
+# capture logs on this system
+if ($copy_logs_opt or $delete_opt) {
+   get_local_logical_log_backup_files \@local_logs, \%local_log_attrs, $ids_logical_log_backup_real_dir;
+}
+# capture logs on remote (disaster recovery) system
+if ($copy_logs_opt) {
+   get_remote_logical_log_backup_files \%remote_logs;
+}
+
+# copy local (production) logs to remote (disaster recovery) system
+if ($copy_logs_opt) {
+   # find logs missing or differently sized on remote (disaster recovery) system
+   my @logs_to_copy =
+      grep {not (
+                defined($remote_logs{$_})
+                and
+                $local_log_attrs{$_}{'size'} == $remote_logs{$_}
+                )
+           }
+       @local_logs;
+   if (scalar @logs_to_copy) {
+      $files_copied = copy_logs_to_remote_system \@logs_to_copy;
+   } else {
+      log_print 'Did not find any logs to copy';
+   }
+} else {
+   log_print 'Copy of logical log backup files '
+           . 'to remote system skipped per --nocopy option';
+}
+if ($apply_opt) {
+   submit_logapply_job;
+} else {
+   log_print 'Log apply on remote system '
+             . 'skipped per --noapply option';
+}
+if ($delete_opt) {
+   my $d_exit_code;
+   ($d_exit_code, $files_deleted) = delete_old_logs
+      \@local_logs,
+      \%local_log_attrs,
+      undef,
+      $ids_physical_backup_used_mtime - $max_time_diff,
+      ;
+   $exit_code = max($d_exit_code, $exit_code);
+} else {
+   log_print 'Log delete skipped per --nodelete option'
+}
+
+log_print 'Logical log backup files:',
+          "  created: $files_created",
+          "  copied : $files_copied",
+          "  deleted: $files_deleted";
+logs_report \@local_logs, \%local_log_attrs
+   if $verbose_opt;
+at_exit;
+exit $exit_code;
+
+sub create_logical_log_backup {
+# run ontape to produce logical log backup, including current logical log
+   # ref array of logical log numbers in baclup from ontape
+   my $created_logs_ref = shift;
+   my $sub_return;
+   my $ids_log_stat = stat($ids_logical_log_backup_name) or
+      log_die "Stat of $ids_logical_log_backup_name failed ($OS_ERROR)";
+   log_die "$ids_logical_log_backup_name is not a plain file"
+         unless S_ISREG($ids_log_stat->mode);
+   if ($ids_log_stat->size) {
+      # IDS logical log backup file is not empty
+      $copy_logs_opt = $delete_opt = $apply_opt = 0;
+      $exit_code = 1;
+      log_warn "Logical log backup file $ids_logical_log_backup_name is not empty",
+               "Investigate and correct before running $progname again";
+      log_print 'Setting --nocopy, --nodelete and --noapply';
+      $sub_return = 0;
+   } else {
+      my $ontape_rc;
+      # -a option directs ontape to backup logical logs
+      my @ontape_options = qw{-a};
+      my $ontape_cmdline = join(' ', $ontape_path, @ontape_options);
+      log_print "Begin $ontape_name";
+      if (not $test_opt) {
+         log_print "$ontape_cmdline"
+            if $verbose_opt;
+         $backup_log_error = 0;
+         my $no_log_data = 0;
+         my $program_over = 0;
+         my $ontape = Expect->new;
+         $ontape->log_stdout(0);
+         $ontape->raw_pty(1);
+         #$ontape->log_file("${progname}_ontape_expect.log");
+         #$ontape->debug(1);
+         #$ontape->exp_internal(1);
+         #$ontape->autoflush(1);
+         #$|=1;
+         unless (defined $ontape->spawn($ontape_path, @ontape_options)) {
+            log_die "Failed to execute $ontape_name ($OS_ERROR)";
+         }
+         my $ontape_pid = $ontape->pid();
+         my ($matched_pattern_position, $error,
+             $successfully_matching_string, $before_match, $after_match) = 
+         $ontape->expect($ontape_timeout, 
+            [ #1
+            '-re', qr{^Server is in an incompatible state or user authentication failed\.\s*}m,
+            sub {
+               my $self = shift;
+               log_print map( {"$ontape_name: $_" }
+                  split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+               $backup_log_error = 1;
+               exp_continue;
+            }
+            ],
+            [ #1
+            '-re', qr{^Please mount tape (\d+) on .* and press Return to continue \Q...\E\s*}m,
+            sub {
+               my $self = shift;
+               log_print map( {"$ontape_name: $_" }
+                  split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+               sleep $sleepy_time;
+               log_print 'Sending return';
+               $self->send("\n");
+               exp_continue;
+            }
+            ],
+            [ #2
+            '-re', qr{^\QDo you want to back up the current logical log? (y/n)\E\s*}m,
+            sub {
+               my $self = shift;
+               log_print map( {"$ontape_name: $_" }
+                  split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+               sleep $sleepy_time;
+               if ($current_opt) {
+                  log_print "Sending \"y\"";
+                  $self->send("y\n");
+               } else {
+                  log_print "Sending \"n\"";
+                  $self->send("n\n");
+               }
+               exp_continue;
+            }
+            ],
+            [ #3
+            '-re', qr{
+               ^\QThis tape contains the following logical logs:\E\s*\r?\n
+               \s*
+               (\d+)                    # 1st log number (captured)
+               (?:                      # begin optional group 1
+                  \s*
+                  -
+                  \s*
+                  (\d+)                 # 2nd log number (captured)
+                  \s*
+               |
+                  \s*
+                  (\Q$PARTIAL_LOG\E)    # literal (captured)
+                  \s*
+               )?                       # end optional group 1
+               \r?\n                    # end of line
+            }mxo,
+            sub {
+               my $self = shift;
+               log_print map( {"$ontape_name: $_" }
+                  split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+               @{$created_logs_ref} = grep defined $_, $self->matchlist;
+               exp_continue;
+            }
+            ],
+            [ #4
+            '-re', qr{^\QThis tape contains no log data\E\s*\r?\n}m,
+            sub {
+               my $self = shift;
+               log_print map( {"$ontape_name: $_" }
+                  split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+               $no_log_data = 1;
+               exp_continue;
+            }
+            ],
+            [ #5
+            'eof',
+            sub {
+               my $self = shift;
+               log_print map( {"$ontape_name: $_" }
+                  split(m{\r?\n}x, $self->exp_before));
+               # return from expect call
+            }
+            ],
+            [ #6
+            '-re', qr{^\QProgram over.\E\s*\r?\n}m,
+            sub {
+               my $self = shift;
+               log_print map( {"$ontape_name: $_" }
+                  split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+               $program_over = 1;
+            }
+            ],
+            [ #7
+            'timeout',
+            sub {
+            # bug in expect? no object parm
+            #my $self = shift;
+            my $self = $ontape;
+               log_print map( {"$ontape_name: $_" }
+                  split(m{\r?\n}x, $self->exp_before));
+               log_warn "Interaction with $ontape_name timed-out after $ontape_timeout seconds";
+               log_print 'Signaling terminate';
+               kill get_signal_number('TERM'), $ontape_pid;
+               log_die 'Terminating';
+            }
+            ],
+         );
+         my $ontape_exit_status = $ontape->exp_exitstatus;
+         if (not defined $ontape_exit_status) {
+            if ($program_over) {
+               # Expect didn't catch EOF
+               $ontape_exit_status = 0;
+            } else {
+               log_die "Unexpected return from Expect of $ontape_name",
+                   'Expect pattern match: ' .
+                   defined $matched_pattern_position ?
+                      $matched_pattern_position : 'undefined',
+                   "Expect error: " .
+                   defined $error ? $error: 'undefined';
+            }
+         }
+         my $ontape_sig = $ontape_exit_status & 127;       # signal
+         $ontape_rc = $ontape_exit_status >> 8;         # return code
+         if ($ontape_sig) {
+            log_die "$ontape_name died with signal $ontape_sig";
+         } elsif ($ontape_rc or $backup_log_error) {
+            $copy_logs_opt = $delete_opt = $apply_opt = 0;
+            $exit_code = 1;
+            log_warn "$ontape_name exited with return code $ontape_rc",
+                     "Error(s) occurred while interacting with $ontape_name";
+            log_print "Setting --nocopy, --nodelete and --noapply";
+            $ids_log_stat = stat($ids_logical_log_backup_name) or
+               log_die "Stat of $ids_logical_log_backup_name failed ($OS_ERROR)";
+            log_warn "Logical log backup file $ids_logical_log_backup_name is not empty",
+                     "Investigate and correct before running $progname again"
+               if $ids_log_stat->size;
+         } elsif ($no_log_data) {
+            $copy_logs_opt = $delete_opt = $apply_opt = 0;
+            $exit_code = 1;
+            log_warn "No logical log numbers were captured from $ontape_name";
+            log_print 'Setting --nocopy, --nodelete and --noapply';
+            truncate $ids_logical_log_backup_name, 0
+               or log_die 'Cannot truncate logical log backup file ' .
+                      "$ids_logical_log_backup_name ($OS_ERROR)";
+            log_print 'Logical backup log file '
+                      . "$ids_logical_log_backup_name was truncated"
+               if $verbose_opt;
+            $sub_return = 0;
+         } else {
+            my $nlogs = scalar @{$created_logs_ref};
+            if ($nlogs == 2 and $created_logs_ref->[1] eq $PARTIAL_LOG) {
+               $apply_opt = 0;
+               log_print "No complete logical logs were captured from $ontape_name; setting --noapply";
+               truncate $ids_logical_log_backup_name, 0
+                  or log_die 'Cannot truncate logical log backup file ' .
+                         "$ids_logical_log_backup_name ($OS_ERROR)";
+               log_print 'Logical backup log file '
+                         . "$ids_logical_log_backup_name was truncated"
+                  if $verbose_opt;
+               $sub_return = 0;
+            } elsif ($nlogs == 0) {
+               $copy_logs_opt = $delete_opt = $apply_opt = 0;
+               $exit_code = 1;
+               log_warn "No logical log numbers were captured from $ontape_name";
+               log_print 'Setting --nocopy, --nodelete and --noapply';
+               $ids_log_stat = stat($ids_logical_log_backup_name) or
+                  log_die "Stat of $ids_logical_log_backup_name failed ($OS_ERROR)";
+               log_warn "Logical log backup file $ids_logical_log_backup_name is not empty",
+                        "Investigate and correct before running $progname again"
+                  if $ids_log_stat->size;
+               $sub_return = 0;
+            } else {
+               $sub_return = ($ontape_rc == 0 ? 1 : 0);
+            }
+         }
+      } else {
+         # test mode output
+         $ontape_rc = 0;
+         @{$created_logs_ref} = (0, 0);
+         log_print "$ontape_cmdline";
+         $sub_return =  1;
+      }
+   log_print "End $ontape_name";
+   }
+   return $sub_return;
+}
+
+sub copy_logical_log_backup {
+# make a (gzipped) copy of the logical log backup file
+   my $created_logs_ref = shift;
+   my $ids_log_stat = stat($ids_logical_log_backup_name) or
+      log_die "Stat of $ids_logical_log_backup_name failed ($OS_ERROR)";
+   log_die "$ids_logical_log_backup_name is not a regular file"
+      unless S_ISREG($ids_log_stat->mode);
+   my $our_logical_log_backup_name = 
+      $logical_log_backup_prefix .
+      join('', 
+         map(
+            {sprintf $log_number_format, $_ if defined $_ }
+            (@{$created_logs_ref})
+         )
+      ) .
+      ($zip_opt ? $gzip_suffix : '');
+   my $copy_cmdline;
+   my $copy_name;
+   if ($zip_opt) {
+      $copy_name = $gzip_name;
+      $copy_cmdline = join(' ',
+         $gzip_path,
+         $gzip_opt,
+         $gzip_output,
+         '<', $ids_logical_log_backup_name,
+         '>', $our_logical_log_backup_name,
+      );
+   } else {
+      $copy_name = $cp_name;
+      $copy_cmdline = join(' ',
+         $cp_path,
+         $cp_opt,
+         $cp_output,
+         $ids_logical_log_backup_name,
+         $our_logical_log_backup_name,
+      );
+   }
+   log_print "Begin copying from $ids_logical_log_backup_name "
+             . "to $our_logical_log_backup_name"
+      if $verbose_opt;
+   if (not $test_opt) {
+      my @copy_out = qx{$copy_cmdline};         # here's where gzip/cp is run
+      my $copy_sig = $CHILD_ERROR & 127;        # signal
+      my $copy_rc = $CHILD_ERROR >> 8;          # return code
+      if ($CHILD_ERROR == -1) {
+         log_die "Failed to execute $copy_name ($OS_ERROR)";
+      } elsif ($copy_sig) {
+         log_die "$copy_name died with signal $copy_sig";
+      } else {
+         my $copy_msg = "$copy_name from $ids_logical_log_backup_name "
+                      . "to $our_logical_log_backup_name exited with return code $copy_rc";
+         chomp @copy_out;
+         if ($copy_rc) {
+            $copy_logs_opt = $delete_opt = $apply_opt = 0;
+            $exit_code = 1;
+            log_print map({"$copy_name: $_"} @copy_out);
+            log_warn  $copy_msg;
+            log_print 'Logical log backup file '
+                    . "$ids_logical_log_backup_name was NOT truncated; "
+                    . 'setting --nocopy, --nodelete and --noapply';
+         } else {
+            log_print map({"$copy_name: $_"} @copy_out), $copy_msg
+               if $verbose_opt;
+            chown_informix $our_logical_log_backup_name
+              or log_die 'Cannot chown logical log backup file ' .
+                     "$our_logical_log_backup_name ($OS_ERROR)";
+            utime $ids_log_stat->atime, $ids_log_stat->mtime, $our_logical_log_backup_name
+              or log_die 'Cannot set times of logical log backup file ' .
+                     "$our_logical_log_backup_name ($OS_ERROR)";
+            # make the logical log backup file be empty
+            truncate $ids_logical_log_backup_name, 0
+               or log_die 'Cannot truncate logical log backup file ' .
+                      "$ids_logical_log_backup_name ($OS_ERROR)";
+            log_print 'Logical backup log file '
+                      . "$ids_logical_log_backup_name was truncated"
+               if $verbose_opt;
+         }
+      }
+   } else {
+      # test mode output
+      log_print $copy_cmdline;
+   }
+   log_print "End copying from $ids_logical_log_backup_name "
+             . "to $our_logical_log_backup_name"
+      if $verbose_opt;
+}
+
+sub get_remote_logical_log_backup_files {
+# get names and sizes of remote (disaster recovery) logical log backup files
+   log_print "Remote ($remote_host) logical log backup files -"
+      if $verbose_opt;
+   my $remote_logs = shift;    # ref hash keyed by log file name
+   my $ls_cmdline = join(' ', 
+      $rshell_path,
+      $remote_host,
+      $ls_path,
+      $ls_opt,
+      $ids_logical_log_backup_real_dir,
+      $ls_output
+   );
+   my @drls_out = qx{$ls_cmdline};                # remote shell runs ls here
+   my $drls_sig = $CHILD_ERROR & 127;               # signal
+   my $drls_rc = $CHILD_ERROR >> 8;                 # return code
+   if ($CHILD_ERROR == -1) {
+      log_die "Failed to execute $ls_name in $rshell_name ($OS_ERROR)";
+   } elsif ($drls_sig) {
+      log_die "$rshell_name running $ls_name died with signal $drls_sig";
+   } elsif ($drls_rc) {
+      $copy_logs_opt = $delete_opt = $apply_opt = 0;
+      $exit_code = 1;
+      chomp @drls_out;
+      log_print map({"$rshell_name/$ls_name: $_"} @drls_out);
+      log_warn "$rshell_name running $ls_name exited with return code $drls_rc";
+      log_print 'Setting --nocopy, --nodelete and --noapply';
+   } else {
+      # remote ls ran ok
+      chomp @drls_out;
+      for my $ls_line_ref (parse_dir \@drls_out) {
+         my ($name, $type, $size, $mtime, $mode) = @$ls_line_ref;
+         if ($type eq 'f' and $name =~ m{$log_match_regex}o) {
+            log_print sprintf '%9d %s %s', $size, display_time($mtime), $name
+               if $verbose_opt;
+            # remember remote (disaster recovery) logical log backup files
+            $remote_logs->{$name} = $size;
+         }
+      }
+   }
+}
+
+sub copy_logs_to_remote_system {
+# copy local (production) logs
+#  missing or differently sized on remote (DR) system
+   my $files_copied = 0;
+   # ref to array of log file names to copy to remote (disaster recovery)
+   my $logs_to_copy = shift;
+   my $dst_arg = "$remote_host:$ids_logical_log_backup_real_dir";
+   log_print "$rcopy_name from "
+             . join(', ', @{$logs_to_copy})
+             . " to $dst_arg"
+      if $test_opt or $verbose_opt;
+   my $remote_copy_cmdline = join(' ',
+      $rcopy_path,
+      $rcopy_opt,
+      @{$logs_to_copy},
+      $dst_arg,
+      $rcopy_output,
+   );
+   log_print "Begin logical log backup copy to $remote_host";
+   if (not $test_opt) {
+      log_print $remote_copy_cmdline
+         if $verbose_opt;
+      my @rcp_out = qx{$remote_copy_cmdline}; # here's where remote copy is run
+      my $rcp_sig = $CHILD_ERROR & 127;       # signal
+      my $rcp_rc = $CHILD_ERROR >> 8 ;        # return code
+      my $rcp_msg = "$rcopy_name exited with return code $rcp_rc";
+      if ($CHILD_ERROR == -1) {
+         log_die "Failed to execute $rcopy_name ($OS_ERROR)";
+      } elsif ($rcp_sig) {
+         log_die "$rcopy_name died with signal $rcp_sig";
+      } else {
+         chomp @rcp_out;
+         if ($rcp_rc) {
+            $delete_opt = $apply_opt = 0;
+            $exit_code = 1;
+            log_print map({"$rcopy_name: $_"} @rcp_out);
+            log_warn $rcp_msg;
+            log_print 'Setting --nodelete and --noapply';
+            $files_copied = "?";
+         } else {
+            log_print map({"$rcopy_name: $_"} @rcp_out), $rcp_msg
+               if $verbose_opt;
+            $files_copied = scalar @{$logs_to_copy};
+            map { $local_log_attrs{$_}{copied} = 1} @{$logs_to_copy};
+         }
+      }
+   } else {
+      # test output
+      log_print $remote_copy_cmdline;
+      $files_copied = scalar @{$logs_to_copy};
+   }
+   log_print "End logical log backup copy to $remote_host";
+   return $files_copied;
+}
+
+sub submit_logapply_job {
+# start log apply on remote (disaster recovery) system
+   my $rshell_cmdline = join(' ',
+      $rshell_path,
+      $remote_host,
+      q{"},
+         q{echo},
+            q{'},
+            $lang_kluge,
+            $logapply_path,
+            ($verbose_opt ? '--verbose' : ()), # empty list is omitted from list to join function
+            ($test_opt ? '--test' : ()),
+            ($apply_opt ? () : '--noapply'),
+            ($delete_opt ? () : '--nodelete'),
+            ($print_opt ? () : '--noprint'),
+            ($log_opt ? () : '--nolog'),
+            ($mail_opt ? '--mail' : ()),
+            q{'},
+         q{|},
+         $at_path,
+         q{now},
+         $at_output,
+      q{"},
+   );
+   log_print "Submitting $logapply_name job";
+   log_print $rshell_cmdline
+      if $verbose_opt or $test_opt;
+   my @logapply_out = qx{$rshell_cmdline};      # here's where logapply is run
+   my $logapply_sig = $CHILD_ERROR & 127;       # signal
+   my $logapply_rc = $CHILD_ERROR >> 8;         # return code
+   my $logapply_msg = "$at_name or $rshell_name exited with return code $logapply_rc";
+   if ($CHILD_ERROR == -1) {
+      log_die "Failed to execute $at_name on $remote_host " .
+          "via $rshell_name ($OS_ERROR)";
+   } elsif ($logapply_sig) {
+      log_die "$at_name on $remote_host via $rshell_name " .
+          "died with signal $logapply_sig";
+   } else {
+      chomp @logapply_out;
+      log_print map({"$at_name: $_"} @logapply_out);
+      if ($logapply_rc) {
+         $exit_code = 1;
+         log_warn $logapply_msg;
+      }
+   }
+}
+
+__END__
+
+=head1 NAME
+
+logbkup - create and copy Informix Dynamic Server 9.4 logical log backups between systems.
+
+=head1 VERSION
+
+This documentation corresponds to logbkup version 2.2.
+
+=head1 SYNOPSIS
+
+logbkup [--[no]backup] [--[no]current] [--[no]zip] [--[no]copy] [--[no]apply] [--[no]delete] [--[no]mail] [--[no]ssh] [--test] [--verbose] [--[no]log] [--[no]print] [--quiet] [--help|--?] [--man] [--version]
+
+example: logbkup --nocopy --noapply
+
+=head1 OPTIONS
+
+Options can be abbreviated as long as they are unambiguous.
+Options shown above with B<[no]> can be negated by prefixing the option with "B<no>" or "B<no->".
+
+=over 8
+
+=item B<--backup>
+
+Create a backup of logical log files (this is the default).
+B<--nobackup> does not run ontape to create a logical log backup file.
+
+=item B<--current>
+
+Back up the current logical log along with other completed logs.
+B<--nocurrent> causes only completed logical logs to be backed up (this is the default).
+
+=item B<--zip>
+
+Compress the logical log backup file after ontape has created it (this is the default).
+
+=item B<--copy>
+
+Copy logical log backups to the remote system (B<--nocopy> is the default).
+
+=item B<--apply>
+
+Apply the logical log backup files on the remote system (B<--noapply> is the default).
+
+=item B<--delete>
+
+Delete old logical log backup files (this is the default).
+Only logical log backup files older than the level-0 physical backup file are deleted.
+If any files fail to copy to the remote system during a program execution, no files are deleted.
+
+=item B<--mail>
+
+Sends mail if warnings or errors are generated.
+Prints warnings or errors to stderr if B<--nomail> is in effect (this is the default).
+
+=item B<--ssh>
+
+Use secure shell (B<ssh>, B<scp>) for remote connections (this is the default).
+B<--nossh> causes B<rsh> and B<rcp> to be used.
+
+=item B<--test>
+
+Print what would be done, but don't make any changes.
+
+=item B<--verbose>
+
+Print more details about what is being done.
+
+=item B<--log>
+
+Print program activity to a log file (this is the default).
+
+=item B<--print>
+
+Print program activity to standard output (this is the default).
+
+=item B<--quiet>
+
+Equivalent to specifying B<--nolog> and B<--noprint>.
+
+=item B<--help> or B<--?>
+
+Print synopsis and exit.
+
+=item B<--man>
+
+Print complete help and exit.
+
+=item B<--version>
+
+Print the version number of the program and exit.
+
+=back
+
+=head1 DESCRIPTION
+
+This program creates Informix Dynamic Server 9.4 logical log backups and synchronizes them between local and remote systems.
+
+It copies and compresses the IDS-created logical log backup file using the logical log number(s) as part of the name.
+After the copy is made, the original IDS-created logical log backup file is made empty.
+It copies logical log backups to the remote system if they do not exist there or are different in size.
+
+If B<--apply> is specified, the B<logapply> program is run on the remote system.
+If there is any failure in producing or copying a logical log backup file, B<logapply> is not run.
+
+Logical log backup files significantly older than the level-0 physical backup file are deleted.
+If there is any failure in creating, copying or applying logical log backup files, no files are deleted.
+
+Ths program is normally run on the production system.
+The remote system is normally the disaster recovery system.
+
+=head1 ENVIRONMENT VARIABLES
+
+This program requires certain Informix-specified environment variables to be set.
+If they are not, built-in default values are used to set the environment variables.
+
+=over 8
+
+=item B<INFORMIXDIR>
+
+Specifies the base directory of the Informix Dynamic Server installed product.
+The default value used if B<INFORMIXDIR> is not set is B</Medic/APPS/Informix1>.
+
+=item B<INFORMIXSERVER>
+
+Specifies the name of the IDS server instance.
+The default value used if B<INFORMIXSERVER> is not set is B<ifx1>.
+
+=item B<INFORMIXSQLHOSTS>
+
+Specifies the full path of the IDS sqlhosts file, normally the B<$INFORMIXDIR/etc/sqlhosts> file.
+The default value used if B<INFORMIXSQLHOSTS> is not set is B<$INFORMIXDIR/etc/sqlhosts>.
+
+=item B<ONCONFIG>
+
+Specifies the name of the IDS server configuration file which is located in the B<$INFORMIXDIR/etc> directory.
+The default value used if B<ONCONFIG> is not set is B<onconfig.ifx1>.
+
+=item B<PATH>
+
+B<$INFORMIXDIR/bin> is appended to the B<PATH> if it does not appear within the B<PATH>.
+
+=back
+
+=head1 B<FILES>
+
+=over 8
+
+=item B<onconfig>
+
+The file specified by the B<ONCONFIG> environment variable is accessed to determine certain files used.
+
+The B<LTAPEDEV> parameter setting is used.
+It is the full pathname of the logical log backup file written by B<ontape>.
+This must be identical on production and disaster recovery systems.
+
+The B<TAPEDEV> parameter setting is used.
+It is the full pathname of the level-0 physical backup file written by B<ontape>.
+This must be identical on production and disaster recovery systems.
+
+=item B<Logical Log Backup Files>
+
+This command expects the names of the logical log backup files to match this pattern: B<Log_L1_L2.gz>.
+B<L1> and B<L2> are ten-digit, left-zero-padded numbers that identify the beginning and ending logical logs contained in the file.
+B<_L2> is omitted if the logical log backup file contains only one logical log.
+The files reside in the same directory as the logical log backup file.
+The files are compressed using B<gzip> so much less disc space is used.
+Uncompressed logical log backup files are acceptable.
+The B<.gz> suffix may appear only on compressed files.
+
+=item B<Level-0 Physical Backup File>
+
+The level-0 physical backup file path is determined as above.
+This file is created by another process.
+
+A gzip-compressed version of the level-0 physical backup file is used if it exists and meets the following criteria:
+
+The file is in the same directory as the level-0 physical backup file.
+
+The file has the same name as the level-0 physical backup file with ".gz" replacing any file name suffix.
+
+The file's modification timestamp is greater than the level-0 physical backup file or the latter is empty.
+
+=item B<Execution Log>
+
+Unless B<--nolog> is specified, a log of program output is written to B<logbkup.log> in the logical log backup directory.
+
+=item B<Execution State File>
+
+A file, B<logbkup.state>, is kept in the logical log backup directory.
+It is used to ensure only one copy of B<logbkup> runs at a time.
+If this file incorrectly reflects the execution status, it can be deleted, provided B<logbkup> is not running.
+
+=back
+
+=head1 B<Programs>
+
+=over 8
+
+=item B<at>
+
+The B<at> command is used to run the B<logapply> program on the remote system.
+By running a batch job, dropped connections do no interrupt the execution of B<logapply>.
+
+=item B<gzip>
+
+The B<gzip> command is used to compress logical log backup files.
+
+=item B<logapply>
+
+The B<logapply> program is run on the remote system to apply logical log backups and to delete old logical log backup files.
+
+=item B<ls>
+
+A directory listing of the remote system directory containing the logical log backup files is obtainied using the B<ls> command.
+
+=item B<onstat>
+
+The B<onstat> command is used to determine the IDS mode.
+B<onstat> is part of IDS.
+
+=item B<ontape>
+
+The B<ontape> command is used to create logical log backup files.
+B<ontape> is part of IDS.
+
+=item B<ssh, scp, rsh, rcp>
+
+These programs are used to access the remote system, depending on the B<--ssh> option.
+
+=back
+
+=head1 BUGS AND LIMITATIONS
+
+Several environmental items are contained within this program:
+
+=over 
+
+=item the default Informix environment variable values
+
+=item the addresses of mail recipients
+
+=item the pathname of the B<logapply> program on the remote, disaster recovery system
+
+=item the remote, disaster recovery system address
+
+=back
+
+The level-0 physical backup file and the logical log backup files must be disc files.
+
+The B<LTAPEDEV> parameter in the B<onconfig> file must be identical on the production and disaster recovery systems.
+The B<TAPEDEV> parameter in the B<onconfig> file must be identical on the production and disaster recovery systems.
+
+The directory containing the IDS logical log backup file is used to hold the compressed logical log backup files and the log file from this program.
+This is the path of the B<LTAPEDEV> parameter, excluding the file name.
+
+The determination of which logical log backup files to delete is based on the modification timestamps of the level-0 physical and the logical log backup files.
+This program preserves the modification timestamps of files copied to the remote system.
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (c) 2009 Absolute Performance Inc., LLC. All rights reserved.
+
+This program is the property of Absolute Performance Inc., LLC and may be used only in accordance with a separate license or contract agreement.
+
+THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+
+=cut
+
