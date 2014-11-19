@@ -1,0 +1,49 @@
+#!/usr/opt/perl5/bin/perl
+##!/usr/bin/perl
+
+use strict;
+use warnings;
+use Net::SMTP;
+use Net::Domain qw{hostname hostfqdn};
+#use Data::Dumper;
+#$Data::Dumper::Terse = 1;
+#$Data::Dumper::Sortkeys = 1;
+#$Data::Dumper::Indent = 3;
+
+my $username = getpwuid $>;
+my $hostname = hostname();
+my $fqdn = hostfqdn();
+#print Dumper $username, $hostname, $fqdn;
+
+my $mta = Net::SMTP->new($hostname, Debug => 1)
+   or die "can't get a new SMTP object ($!)";
+$mta->mail("$username\@$fqdn")
+   or die "mail method failed";
+#$mta->recipient('helpdesk@integramed.com', 'bwsimpson@idmcnet.com', 'ccs@absolute-performance.com')
+$mta->recipient('bwsimpson@idmcnet.com', 'ccs@absolute-performance.com')
+   or warn "recipient method failed";
+$mta->reset
+   or die "reset method failed";
+$mta->data( <<EOF
+To: helpdesk\@integramed.com
+From: Cindy Simpson <ccs\@absolute-performance.com>
+Subject: Test from $hostname
+
+This is a test of the e-mail capability of $hostname.
+Please forward this message to:
+<mailto:ccs\@absolute-performance.com>
+
+Thanks,
+--
+Cindy C. Simpson
+Lead Database Administrator
+phone: 303.443.7000   Ext. 523
+<mailto:ccs\@absolute-performance.com>
+2100 Central Avenue * Suite 102 * Boulder, CO 80301
+<http://www.absolute-performance.com/>
+EOF
+)
+   or warn "data method failed";
+$mta->quit
+   or die "quit method failed";
+exit;

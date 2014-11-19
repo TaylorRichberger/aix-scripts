@@ -1,0 +1,3 @@
+#!/bin/sh
+# find line beginning with pattern, followed by one or more spaces, print only it, cut out comments, cut out beginning and ending whitespace
+sed -n "s/^$1[ \t]*//p" "$INFORMIXDIR"/etc/"$ONCONFIG" | sed 's/#.*$//' | sed 's/^[ \t]*//' | sed 's/[ \t]*$//'

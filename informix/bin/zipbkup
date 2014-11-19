@@ -1,0 +1,407 @@
+#!/bin/sh
+# zipbkup
+# (If renamed, change its name in POD, too)
+# Compress the IDS level-0 physical backup file using the gzip program
+# Retain the original file and set the attributes of the compressed file
+#   the atime and mtime are "copied"
+#   the owner, group and permissions are set to predetermined values
+# A state file is kept to avoid running more than one copy at a time.
+# Copyright (c) 2010 Absolute Performance Inc., LLC. All rights reserved.
+
+# echo "this command has been disabled"; exit;
+# this is a multilanguage script:
+#   1. a shell script to set up the environment
+. /API/ids
+case $(hostname | cut -d . -f 1) in
+   v11100)
+      perl=/usr/opt/perl5/bin/perl
+   ;;
+   v611100)
+      perl=/usr/opt/perl5/bin/perl
+   ;;
+   *)
+      perl=/usr/bin/perl  
+   ;;
+esac
+exec $perl -x -S $0 ${1+"$@"}
+#   2. A Perl script to do the work
+#!perl
+# kluge: align Perl line number so the line after the next line is...
+# line 31
+
+use warnings;
+use strict;
+use FindBin qw{$Bin};
+use lib "$Bin/../lib"; # ApiIdsPha module is in a sibling dir to us
+use ApiIdsPha;
+use English qw{-no_match_vars};
+use Fcntl qw{:mode};
+use File::Basename qw{fileparse};
+use File::Spec::Functions qw{catfile splitpath};
+use File::stat;
+use Getopt::Long;
+use Net::Domain qw{hostname hostfqdn};
+use Pod::Usage;
+#use Data::Dumper;
+#$Data::Dumper::Terse = 1;
+#$Data::Dumper::Sortkeys = 1;
+#$Data::Dumper::Indent = 3;
+sub zip_physical_backup;
+
+my $version = '1.2'; # don't forget to change the imbedded POD, too
+
+my (undef, undef, $progname) = splitpath $0;
+my $hostname = hostname();
+my $username = getpwuid $EUID;
+
+# validate command line options
+my ($help_opt, $man_opt, $version_opt, $verbose_opt, $test_opt,) = (0, 0, 0, 0, 0,);
+my ($print_opt, $log_opt, $quiet_opt, $mail_opt, ) = (1, 1, 0, 0,);
+GetOptions(
+   'help|?' => \$help_opt,
+   'man' => \$man_opt,
+   'version' => \$version_opt,
+   'log!' => \$log_opt,
+   'print!' => \$print_opt,
+   'quiet' => \$quiet_opt,
+   'mail!' => \$mail_opt,
+   'test' => \$test_opt,
+   'verbose' => \$verbose_opt,
+) or pod2usage 'Errors were found in the command options.';
+if ($version_opt) {
+   print "$progname version $version\n";
+   exit 1;
+} 
+pod2usage '-verbose' => 2
+   if $man_opt;
+pod2usage
+   if $help_opt;
+
+# quiet option forces off all normal output
+$verbose_opt = $log_opt = $print_opt = 0 if $quiet_opt;
+# don't write to log file if in test mode
+$log_opt = 0 if $test_opt;
+
+# mail and remote host parameters
+my $you_are_here = 0;
+set_mail_from $username . '@' . hostfqdn();
+set_mail_subject "$hostname: $progname status";
+if ($hostname eq 'quattrof14') {
+   $you_are_here = 1;
+   set_mail_host $hostname;
+   set_mail_to(
+      'bart@idmcnet.com',
+   );
+} elsif ($hostname eq 'miata') {
+   $you_are_here = 1;
+   set_mail_host $hostname;
+   set_mail_to(
+      'bart@idmcnet.com',
+   );
+} elsif ($hostname eq 'v11100') {
+   $you_are_here = 1;
+   set_mail_host 'crpexca02';
+   set_mail_to(
+      'helpdesk@integramed.com',
+      'csteam@absolute-performance.com',
+   );
+   set_mail_cc(
+      'ccs@absolute-performance.com',
+      'bws@absolute-performance.com',
+   );
+} elsif ($hostname eq 'v611100') {
+   $you_are_here = 1;
+   set_mail_host 'crpexca02';
+   set_mail_to(
+      'helpdesk@integramed.com',
+      'csteam@absolute-performance.com',
+   );
+   set_mail_cc(
+      'ccs@absolute-performance.com',
+      'bws@absolute-performance.com',
+   );
+} else {
+   set_mail_host 'localhost';
+   set_mail_to('root');
+}
+
+set_shared_variables({
+   hostname          => $hostname,
+   progname          => $progname,
+   test_opt          => $test_opt,
+   print_opt         => $print_opt,
+   log_opt           => $log_opt,
+   mail_opt          => $mail_opt,
+   verbose_opt       => $verbose_opt,
+}); 
+log_die "Hostname \"$hostname\" is unknown to $progname"
+   unless $you_are_here;
+get_set_environment_variables;
+
+my $gzip_name = 'gzip';
+my $gzip_path = locate_cmd($gzip_name);
+my $gzip_compress_opt = '-c';
+my $gzip_compress_lvl = '-1';
+
+my %onconfig_parms;
+parse_onconfig(\%onconfig_parms);
+my (
+   $ids_physical_backup_pathname,
+   undef,
+   undef,
+   $ids_physical_backup_mtime,
+   $ids_physical_backup_size,
+   $ids_physical_backup_real_pathname,
+   undef, 
+   undef,
+   undef,
+   ) = validate_tapedev(\%onconfig_parms);
+
+# from gzipped (.gz suffix) version of physical backup path
+my ($basename, $dirpath, undef) = fileparse($ids_physical_backup_real_pathname, qr{\.[^.]*});
+my $ids_physical_backup_zip_pathname = catfile($dirpath, $basename . '.gz');
+my (undef, $ids_physical_backup_real_dir, undef) = splitpath $ids_physical_backup_real_pathname; 
+chdir $ids_physical_backup_real_dir
+   or log_die 'Unable to set current directory to ' .
+          "$ids_physical_backup_real_dir ($OS_ERROR)";
+
+umask 0007;     # make all files output from this rw-rw----
+my $exit_code = 0;
+set_running_state;
+start_logging "${progname}.log";
+log_print
+   "Physical backup file",
+   "Onconfig:    $ids_physical_backup_pathname",
+   ($ids_physical_backup_real_pathname eq $ids_physical_backup_pathname ? () :
+      "Real target: $ids_physical_backup_real_pathname"),
+   "  Modification time is " . display_time($ids_physical_backup_mtime),
+   "  Size is " . $ids_physical_backup_size,
+   if $verbose_opt;
+zip_physical_backup;
+my ($ids_physical_backup_zip_stat, $ids_physical_backup_zip_mtime, $ids_physical_backup_zip_size);
+if (-e $ids_physical_backup_zip_pathname) {
+   $ids_physical_backup_zip_stat = stat($ids_physical_backup_zip_pathname)
+      or log_die "Stat failed for $ids_physical_backup_zip_pathname ($OS_ERROR)";
+   log_die "$ids_physical_backup_zip_pathname is not a plain file"
+      unless S_ISREG $ids_physical_backup_zip_stat->mode;
+   $ids_physical_backup_zip_mtime = $ids_physical_backup_zip_stat->mtime;
+   $ids_physical_backup_zip_size = $ids_physical_backup_zip_stat->size;
+   log_print
+      "Physical backup file",
+      "Gzipped:     $ids_physical_backup_zip_pathname",
+      "  Modification time is " . display_time($ids_physical_backup_zip_mtime),
+      "  Size is " . $ids_physical_backup_zip_size,
+      if $verbose_opt;
+}
+at_exit;
+exit $exit_code;
+
+sub zip_physical_backup {
+   my $gzip_cmdline = join(' ',
+      $gzip_path,
+      $gzip_compress_opt,
+      $gzip_compress_lvl,
+      '2>&1', # before stdout redirect below
+      $ids_physical_backup_real_pathname,
+      '>',
+      $ids_physical_backup_zip_pathname,
+   );
+   log_print "Gzipping $ids_physical_backup_real_pathname to $ids_physical_backup_zip_pathname";
+   if (! $test_opt) {
+      log_print $gzip_cmdline
+         if $verbose_opt;
+      my @gzip_out = qx{$gzip_cmdline}; # here's where gzip is run
+      my $gzip_sig = $CHILD_ERROR & 127; # signal
+      my $gzip_rc = $CHILD_ERROR >> 8;   # return code
+      my $gzip_msg = "$gzip_name exited with return code $gzip_rc";
+      if ($CHILD_ERROR == -1) {
+         log_die "Failed to execute $gzip_name ($OS_ERROR)";
+      } elsif ($gzip_sig) {
+         log_die "$gzip_name died with signal $gzip_sig";
+      } elsif ($gzip_rc) {
+         chomp @gzip_out;
+         log_print map({"$gzip_name: $_"} @gzip_out);
+         $exit_code = 1;
+         log_warn $gzip_msg;
+      } else {
+         log_print $gzip_msg;
+         chown_informix $ids_physical_backup_zip_pathname
+            or log_die "Cannot chown $ids_physical_backup_zip_pathname ($OS_ERROR)";
+         utime $ids_physical_backup_mtime, $ids_physical_backup_mtime, $ids_physical_backup_zip_pathname
+            or log_die "Unable to set modification time for $ids_physical_backup_zip_pathname ($OS_ERROR)";
+      }      
+   } else {
+      # test output
+      log_print $gzip_cmdline;
+   }
+   log_print "End Gzip";
+   
+}
+
+__END__
+
+=head1 NAME
+
+zipbkup - compress an Informix Dynamic Server 9.4 level-0 physical backup file using gzip.
+
+=head1 VERSION
+
+This documentation corresponds to zipbkup version 1.2.
+
+=head1 SYNOPSIS
+
+zipbkup [--[no]mail] [--test] [--verbose] [--[no]log] [--[no]print] [--quiet] [--help|--?] [--man] [--version]
+
+example: zipbkup --mail --noprint
+
+=head1 OPTIONS
+
+Options can be abbreviated as long as they are unambiguous.
+Options shown above with B<[no]> can be negated by prefixing the option with "B<no>" or "B<no->".
+
+=over 8
+
+=item B<--mail>
+
+Sends mail if warnings or errors are generated.
+Prints warnings or errors to stderr if B<--nomail> is in effect (this is the default).
+
+=item B<--test>
+
+Print what would be done, but don't make any changes.
+
+=item B<--verbose>
+
+Print more details about what is being done.
+
+=item B<--log>
+
+Print program activity to a log file (this is the default).
+
+=item B<--print>
+
+Print program activity to standard output (this is the default).
+
+=item B<--quiet>
+
+Equivalent to specifying B<--nolog> and B<--noprint>.
+
+=item B<--help> or B<--?>
+
+Print synopsis and exit.
+
+=item B<--man>
+
+Print complete help and exit.
+
+=item B<--version>
+
+Print the version number of the program and exit.
+
+=back
+
+=head1 DESCRIPTION
+
+This program compresses an Informix Dynamic Server 9.4 level-0 physical backup file using the gzip program.
+
+=head1 ENVIRONMENT VARIABLES
+
+This program requires certain Informix-specified environment variables to be set.
+If they are not, built-in default values are used to set the environment variables.
+
+=over 8
+
+=item B<INFORMIXDIR>
+
+Specifies the base directory of the Informix Dynamic Server installed product.
+The default value used if B<INFORMIXDIR> is not set is B</Medic/APPS/Informix1>.
+
+=item B<INFORMIXSERVER>
+
+Specifies the name of the IDS server instance.
+The default value used if B<INFORMIXSERVER> is not set is B<ifx1>.
+
+=item B<INFORMIXSQLHOSTS>
+
+Specifies the full path of the IDS sqlhosts file, normally the B<$INFORMIXDIR/etc/sqlhosts> file.
+The default value used if B<INFORMIXSQLHOSTS> is not set is B<$INFORMIXDIR/etc/sqlhosts>.
+
+=item B<ONCONFIG>
+
+Specifies the name of the IDS server configuration file which is located in the B<$INFORMIXDIR/etc> directory.
+The default value used if B<ONCONFIG> is not set is B<onconfig.ifx1>.
+
+=item B<PATH>
+
+B<$INFORMIXDIR/bin> is appended to the B<PATH> if it does not appear within the B<PATH>.
+
+=back
+
+=head1 B<FILES>
+
+=over 8
+
+=item B<onconfig>
+
+The file specified by the B<ONCONFIG> environment variable is accessed to determine certain files used.
+
+The B<TAPEDEV> parameter setting is used.
+It is the full pathname of the level-0 physical backup file written by B<ontape>.
+
+=item B<Level-0 Physical Backup File>
+
+The level-0 physical backup file path is determined as above.
+This file is created by another process.
+
+The gzip-compressed version of the level-0 physical backup file is written in the same directory as the level-0 physical backup file.
+The file has the same name as the level-0 physical backup file with ".gz" replacing any file name suffix.
+The file's modification timestamp is the same as the level-0 physical backup file.
+
+=item B<Execution Log>
+
+Unless B<--nolog> is specified, a log of program output is written to B<zipbkup.log> in the level-0 physical backup file's directory.
+
+=item B<Execution State File>
+
+A file, B<zipbkup.state>, is kept in the level-0 physical backup file's directory.
+It is used to ensure only one copy of B<zipbkup> runs at a time.
+If this file incorrectly reflects the execution status, it can be deleted, provided B<zipbkup> is not running.
+
+=back
+
+=head1 B<Programs>
+
+=over 8
+
+=item B<gzip>
+
+The B<gzip> command is used to compress the level-0 physical backup file.
+
+=back
+
+=head1 BUGS AND LIMITATIONS
+
+Several environmental items are contained within this program:
+
+=over 
+
+=item the default Informix environment variable values
+
+=item the addresses of mail recipients
+
+=back
+
+The level-0 physical backup file must be a disc file.
+
+The directory containing the level-0 physical backup file is used to hold the log file and execution state file from this program.
+This is the path of the B<TAPEDEV> parameter, excluding the file name.
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (c) 2009 Absolute Performance Inc., LLC. All rights reserved.
+
+This program is the property of Absolute Performance Inc., LLC and may be used only in accordance with a separate license or contract agreement.
+
+THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+
+=cut

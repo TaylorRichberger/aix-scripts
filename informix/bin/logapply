@@ -1,0 +1,1052 @@
+#!/bin/sh
+# logapply
+# (If renamed, change its name in POD, too)
+# Apply Informix Dynamic Server 9.4 logical log backup files
+#   on disaster recovery system
+# Copyright (c) 2010 Absolute Performance Inc., LLC. All rights reserved.
+
+# echo "this command has been disabled"; exit;
+# this is a multilanguage script:
+#   1. a shell script to set up the environment
+. /API/ids
+case $(hostname | cut -d . -f 1) in
+   v11100)
+      perl=/usr/opt/perl5/bin/perl
+   ;;
+   v611100)
+      perl=/usr/opt/perl5/bin/perl
+   ;;
+   v1100)
+      perl=/usr/opt/perl5/bin/perl
+   ;;
+   *)
+      perl=/usr/bin/perl  
+   ;;
+esac
+exec $perl -x -S $0 ${1+"$@"}
+#   2. A Perl script to do the work
+#!perl
+# kluge: align Perl line number so the line after the next line is...
+# line 28
+
+use warnings;
+use strict;
+use FindBin qw{$Bin};
+use lib "$Bin/../lib"; # ApiIdsPha module is in a sibling dir to us
+use ApiIdsPha;
+use English qw{-no_match_vars};
+use Expect;
+use File::Basename qw{fileparse};
+use File::Spec::Functions qw{splitpath};
+use Getopt::Long;
+use List::Util qw{first max};
+use Net::Domain qw{hostname hostfqdn};
+use Pod::Usage;
+#use Data::Dumper;
+#$Data::Dumper::Terse = 1;
+#$Data::Dumper::Sortkeys = 1;
+#$Data::Dumper::Indent = 3;
+sub apply_logical_logs;
+sub mount_log_file;
+sub switch_ids_to_online_mode;
+
+my $version = '2.2'; # don't forget to change the imbedded POD, too
+
+# Maximum difference between level-0 physical backup file and logical log backup file,
+# in seconds. Logical log backups are kept until they are more 
+# than this much older than the level-0 physical backup file.
+# The value is 36 hours
+my $max_time_diff = 3600 * 36;
+
+# $onmode_timeout is how long Expect should wait for a match before quitting
+# This must be great enough for onmode to switch IDS to On-line mode
+# The value is 5 minutes
+my $onmode_timeout = 60 * 5;
+
+# $ontape_timeout is how long Expect should wait for a match before quitting
+# This must be great enough for ontape to apply a logical log backup file.
+# The value is 60 minutes
+my $ontape_timeout = 60 * 60;
+
+# $sleepy_time is how long to delay responding to a prompt in Expect code
+# There is some anecdotal evidence that immediate responses to IDS ontape
+# queries causes it to become confused.
+# The value is 1 seconds
+my $sleepy_time = 1;
+
+# IDS server modes reported by onstat -
+my $ids_fast_recovery = 'Fast Recovery';
+my $ids_fast_recovery_ckpt_req = 'Fast Recovery (CKPT REQ)';
+my $ids_quiescent = 'Quiescent';
+my $ids_on_line = 'On-Line';
+
+# Logical log backup file name format is: Log_L_L.gz
+#  where "L" represents the logical log number from ontape
+#  with 10 digits (this pattern occurs 1 or 2 times)
+# Used to match logical log backup file name
+my $log_match_regex =
+   qr{
+      \A                # beginning of string
+      Log_              # literal
+      (\d{10})          # (capture) ten digits
+      (?:_(\d{10}))?    # optional, _ and (capture) ten digits
+      (?:\.gz)?         # optional .gz
+      \Z                # end of string
+   }ox;
+# Used to generate logical log backup file name
+my $gzip_suffix = '.gz';
+
+my (undef, undef, $progname) = splitpath $0;
+my $hostname = hostname();
+my $username = getpwuid $EUID;
+
+# validate command line options
+my ($help_opt, $man_opt, $version_opt, $verbose_opt, $test_opt,) = (0, 0, 0, 0, 0,);
+my ($print_opt, $log_opt, $quiet_opt, $mail_opt, ) = (1, 1, 0, 0,);
+my $apply_opt = 1;
+my $online_opt = 0;
+my $delete_opt = 1;
+GetOptions(
+   'help|?' => \$help_opt,
+   'man' => \$man_opt,
+   'version' => \$version_opt,
+   'apply!' => \$apply_opt,
+   'online!' => \$online_opt,
+   'delete!' => \$delete_opt,
+   'log!' => \$log_opt,
+   'print!' => \$print_opt,
+   'quiet' => \$quiet_opt,
+   'mail!' => \$mail_opt,
+   'test' => \$test_opt,
+   'verbose' => \$verbose_opt,
+) or pod2usage 'Errors were found in the command options.';
+if ($version_opt) {
+   print "$progname version $version\n";
+   exit 1;
+} 
+pod2usage '-verbose' => 2
+   if $man_opt;
+pod2usage
+   if $help_opt;
+
+# quiet option forces off all normal output
+$verbose_opt = $log_opt = $print_opt = 0 if $quiet_opt;
+# don't write to log file if in test mode
+$log_opt = 0 if $test_opt;
+
+# mail and remote host parameters
+my $you_are_here = 0;
+set_mail_from $username . '@' . hostfqdn();
+set_mail_subject "$hostname: $progname status";
+if ($hostname eq 'quattrof14') {
+   $you_are_here = 1;
+   set_mail_host $hostname;
+   set_mail_to(
+      'bart@idmcnet.com',
+   );
+} elsif ($hostname eq 'miata') {
+   $you_are_here = 1;
+   set_mail_host $hostname;
+   set_mail_to(
+      'bart@idmcnet.com',
+   );
+} elsif ($hostname eq 'v11100') {
+   $you_are_here = 1;
+   set_mail_host 'crpexca02';
+   set_mail_to(
+      'helpdesk@integramed.com',
+      'csteam@absolute-performance.com',
+   );
+   set_mail_cc(
+      'ccs@absolute-performance.com',
+      'bws@absolute-performance.com',
+   );
+} elsif ($hostname eq 'v611100') {
+   $you_are_here = 1;
+   set_mail_host 'crpexca02';
+   set_mail_to(
+      'helpdesk@integramed.com',
+      'csteam@absolute-performance.com',
+   );
+   set_mail_cc(
+      'ccs@absolute-performance.com',
+      'bws@absolute-performance.com',
+   );
+} elsif ($hostname eq 'v1100') {
+   $you_are_here = 1;
+   set_mail_host 'crpexca02';
+   set_mail_to(
+      'helpdesk@integramed.com',
+      'csteam@absolute-performance.com',
+   );
+   set_mail_cc(
+      'ccs@absolute-performance.com',
+      'bws@absolute-performance.com',
+   );
+} else {
+   set_mail_host 'localhost';
+   set_mail_to('root');
+}
+
+set_shared_variables({
+   hostname          => $hostname,
+   progname          => $progname,
+   test_opt          => $test_opt,
+   print_opt         => $print_opt,
+   log_opt           => $log_opt,
+   mail_opt          => $mail_opt,
+   verbose_opt       => $verbose_opt,
+   log_match_regex   => $log_match_regex,
+}); 
+log_die "Hostname \"$hostname\" is unknown to $progname"
+   unless $you_are_here;
+set_signal_data;
+get_set_environment_variables;
+
+my $cp_name = 'cp';
+my $cp_path = locate_cmd($cp_name);
+my $cp_opt = '-p';
+my $cp_output = '2>&1';
+my $gzip_name = 'gzip';
+my $gzip_path = locate_cmd($gzip_name);
+my $gzip_opt = '-d';
+my $gzip_output = '2>&1';
+my $onmode_name = 'onmode';
+my $onmode_path = locate_cmd($onmode_name);
+my $onstat_name = 'onstat';
+my $onstat_path = locate_cmd($onstat_name);
+my $onstat_hdr_only_opt = '-';
+my $onstat_output = '2>&1';
+my $ontape_name = 'ontape';
+my $ontape_path = locate_cmd($ontape_name);
+
+my %onconfig_parms;
+parse_onconfig(\%onconfig_parms);
+my (
+   undef,
+   $ids_logical_log_backup_dir,
+   $ids_logical_log_backup_name,
+   $ids_logical_log_backup_real_dir,
+   ) = validate_ltapedev(\%onconfig_parms);
+my (
+   $ids_physical_backup_pathname,
+   undef,
+   undef,
+   $ids_physical_backup_mtime,
+   $ids_physical_backup_size,
+   $ids_physical_backup_real_pathname,
+   $ids_physical_backup_zip_pathname, 
+   $ids_physical_backup_zip_mtime,
+   $ids_physical_backup_zip_size,
+   ) = validate_tapedev(\%onconfig_parms);
+# use gzipped level-0 physical backup file only if it has a newer modification
+#   time than the uncompressed one or if the uncompressed one is empty
+my $ids_physical_backup_used_pathname;
+my $ids_physical_backup_used_mtime;
+my $use_gzipped_ids_physical_backup;
+if (defined($ids_physical_backup_zip_pathname) and
+   ( $ids_physical_backup_zip_mtime > $ids_physical_backup_mtime or
+     $ids_physical_backup_size == 0 )
+   ) {
+   $use_gzipped_ids_physical_backup = 1;
+   $ids_physical_backup_used_pathname = $ids_physical_backup_zip_pathname;
+   $ids_physical_backup_used_mtime = $ids_physical_backup_zip_mtime;
+} else {
+   $use_gzipped_ids_physical_backup = 0;
+   $ids_physical_backup_used_pathname = $ids_physical_backup_real_pathname;
+   $ids_physical_backup_used_mtime = $ids_physical_backup_mtime;
+}
+
+chdir $ids_logical_log_backup_real_dir
+   or log_die 'Unable to set current directory to ' .
+          "$ids_logical_log_backup_real_dir ($OS_ERROR)";
+
+umask 0007;     # make all files output from this rw-rw----
+my $exit_code = 0;
+set_running_state;
+start_logging "${progname}.log";
+log_print
+   "Physical backup file",
+   "Onconfig:    $ids_physical_backup_pathname",
+   ($ids_physical_backup_real_pathname eq $ids_physical_backup_pathname ? () :
+      "Real target: $ids_physical_backup_real_pathname"),
+   "  Modification time is " . display_time($ids_physical_backup_mtime),
+   "  Size is " . $ids_physical_backup_size,
+   (defined($ids_physical_backup_zip_pathname) ?
+      ("Gzipped:     $ids_physical_backup_zip_pathname",
+      "  Modification time is " . display_time($ids_physical_backup_zip_mtime),
+      "  Size is " . $ids_physical_backup_zip_size,
+      ) : ()),
+   "Used:        $ids_physical_backup_used_pathname",
+   "Logical log backup directory is $ids_logical_log_backup_dir",
+   ($ids_logical_log_backup_real_dir eq $ids_logical_log_backup_dir ? () :
+      "Real target: $ids_logical_log_backup_real_dir"),
+   if $verbose_opt;
+
+my @local_logs;         # array of names of log files
+my %local_log_attrs;    # hash keyed by log file name, data is anon hash of size and mtime
+my $files_copied = 0;
+my $files_applied = 0;
+my $files_deleted = 0;
+my $apply_log_error;
+my $last_applied_lognum;
+
+my $ids_mode = get_ids_mode;
+if ( ( $apply_opt or $online_opt ) and $ids_mode !~ m{^$ids_fast_recovery}o) {
+   my $ids_mode_msg = "Cannot apply logical logs; IDS is in $ids_mode mode";
+   $online_opt = $apply_opt = 0;
+   $exit_code = 1;
+   log_warn $ids_mode_msg;
+   log_print 'Setting --noapply and --noonline options';
+}
+
+if ($apply_opt or $delete_opt) {
+   get_local_logical_log_backup_files \@local_logs, \%local_log_attrs, $ids_logical_log_backup_real_dir;
+}
+if ($apply_opt or $online_opt) {
+   if (scalar @local_logs or $online_opt) {
+      ($apply_log_error, $last_applied_lognum) = apply_logical_logs \@local_logs, \%local_log_attrs;
+      if ($online_opt and not $apply_log_error) {
+         switch_ids_to_online_mode; 
+      }
+   } else {
+      log_print 'Did not find any logs to apply';
+   }
+} else {
+   log_print 'Log apply skipped per --noapply option';
+}
+if ($delete_opt) {
+   my $d_exit_code;
+   ($d_exit_code, $files_deleted) = delete_old_logs
+      \@local_logs,
+      \%local_log_attrs,
+      $last_applied_lognum,
+      $ids_physical_backup_used_mtime - $max_time_diff,
+   ;
+   $exit_code = max($d_exit_code, $exit_code);
+} else {
+   log_print 'Log delete skipped per --nodelete option';
+}
+
+log_print 'Logical log backup files:',
+          "  copied : $files_copied",
+          "  applied: $files_applied",
+          "  deleted: $files_deleted";
+logs_report \@local_logs, \%local_log_attrs
+   if $verbose_opt;
+at_exit;
+exit $exit_code;
+
+sub apply_logical_logs {
+# run ontape to apply logs
+   my $logs_aref = shift;       # ref array of names of log files to apply
+   my $logs_href = shift;       # ref hash  of log attributes
+   my $apply_log_error = 0;
+   my $contains_lognum;
+   my $last_applied_lognum;
+   my $mounted_lognum;
+   my $mounted_lognum_2;
+   my $next_lognum;
+   my $not_found_lognum;
+   my $roll_forward_lognum;
+   my $lowest_lognum;
+   my $highest_lognum;
+   my $logname;
+   my $tapenum;
+   my $log_index;
+   my $truncate_log_file = 1;
+   ($lowest_lognum) = defined $logs_aref->[0] ? $logs_aref->[0] =~ m{$log_match_regex}o : 0;
+   my ($h1, $h2) = defined $logs_aref->[-1] ? $logs_aref->[-1] =~ m{$log_match_regex}o : (0, undef) ;
+   $highest_lognum = defined($h2) ? $h2 : $h1;
+   # ontape -l option is for logiacl log apply as part of a recovery operation
+   my @ontape_options = qw{-l};
+   my $ontape_cmdline = join(' ', $ontape_path, @ontape_options);
+   log_print "Begin $ontape_name";
+   if (not $test_opt) {
+      log_print $ontape_cmdline
+         if $verbose_opt;
+      my $program_over = 0;
+      my $ontape = Expect->new;
+      $ontape->log_stdout(0);
+      $ontape->raw_pty(1);
+      #$ontape->log_file("${progname}_ontape_expect.log");
+      #$ontape->debug(1);
+      #$ontape->exp_internal(1);
+      #$ontape->autoflush(1);
+      #$|=1;
+      unless (defined $ontape->spawn($ontape_path, @ontape_options)) {
+         log_die "Failed to execute $ontape_name ($OS_ERROR)";
+      }
+      my $ontape_pid = $ontape->pid();
+      my ($matched_pattern_position, $error,
+          $successfully_matching_string, $before_match, $after_match) = 
+      $ontape->expect($ontape_timeout, 
+         [ #1
+         '-re', qr{^Roll forward should start with log number (\d+)\r?\n}m,
+         sub {
+            my $self = shift;
+            log_print map( {"$ontape_name: $_" }
+               split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+            ($roll_forward_lognum) = $self->matchlist;
+            $log_index = get_log_index($logs_aref, $roll_forward_lognum);
+            log_warn "Cannot find logical log backup file for log number $roll_forward_lognum"
+               unless defined $log_index;
+            exp_continue;
+         }
+         ],
+         [ #2
+         '-re', qr{^Please mount tape (\d+) on .* and press Return to continue \Q...\E\s*}m,
+         sub {
+            my $self = shift;
+            log_print map( {"$ontape_name: $_" }
+               split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+            ($tapenum) = $self->matchlist;
+            sleep $sleepy_time;
+            if ($apply_opt and defined $log_index and defined $logs_aref->[$log_index] and not $apply_log_error) {
+               $logname = $logs_aref->[$log_index];
+               # break loops - check for prior mount
+               my $prev_tapenum = $logs_href->{$logname}{tapenum};
+               my $prev_lognum = $logs_href->{$logname}{lognum};
+               my $prev_lognum_2 = $logs_href->{$logname}{lognum2};
+               if (defined $prev_tapenum) {
+                  $apply_log_error = 1;
+                  log_warn "Logical log backup file $logname "
+                          . "was mounted as tape $prev_tapenum "
+                          . 'for log number'
+                          . (defined $prev_lognum_2 ?
+                               "s $prev_lognum - $prev_lognum_2" :
+                               " $prev_lognum");
+                  log_print 'Signaling interrupt';
+#                 $self->send("\cC");
+                  kill get_signal_number('INT'), $ontape_pid;
+               } elsif (mount_log_file($logname)) {
+                  ($mounted_lognum, $mounted_lognum_2) = 
+                     $logname =~ m{$log_match_regex}o;
+                  $mounted_lognum += 0; # get rid of leading zeros
+                  $mounted_lognum_2 += 0 if defined $mounted_lognum_2;
+                  # help stop loops; record log as mounted
+                  $logs_href->{$logname}{tapenum} = $tapenum;
+                  $logs_href->{$logname}{lognum} = $mounted_lognum;
+                  $logs_href->{$logname}{lognum2} = $mounted_lognum_2;
+                  undef $roll_forward_lognum; 
+                  undef $contains_lognum;
+                  undef $not_found_lognum;
+                  $files_copied++;
+                  log_print "Mounted tape $tapenum with file $logname "
+                          . 'for log number'
+                          . (defined $mounted_lognum_2 ?
+                             "s $mounted_lognum - $mounted_lognum_2" :
+                             " $mounted_lognum"),
+                            'Sending return';
+                  $self->send("\n");
+               } else {
+                  # mount didn't work
+                  $apply_log_error = 1;
+                  log_print 'Signaling interrupt';
+#                 $self->send("\cC");
+                  kill get_signal_number('INT'), $ontape_pid;
+               }
+            } else {
+               # no (more) logs or error or need to go On-line - hit Ctrl-C
+               log_print 'Signaling interrupt';
+#              $self->send("\cC");
+               kill get_signal_number('INT'), $ontape_pid;
+            }
+            exp_continue;
+         }
+         ],
+         [ #3
+         '-re', qr{^This tape contains log (\d+)\r?\n}m,
+         sub {
+            my $self = shift;
+            log_print map( {"$ontape_name: $_" }
+               split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+            ($contains_lognum) = $self->matchlist;
+            exp_continue;
+         }
+         ],
+         [ #4
+         '-re', qr{^Log (\d+) not found\.\r?\n}m,
+         sub {
+            my $self = shift;
+            log_print map( {"$ontape_name: $_" }
+               split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+            ($not_found_lognum) = $self->matchlist;
+            exp_continue;
+         }
+         ],
+         [ #5
+         '-re', qr{^could not read log tape.\r?\n}m,
+         sub {
+            my $self = shift;
+            log_print map( {"$ontape_name: $_" }
+               split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+            $apply_log_error = 1;
+            exp_continue;
+         }
+         ],
+         [ #6
+         '-re', qr{^Do you want to restore another log tape\? \(y/n\)}m,
+         sub {
+            my $self = shift;
+            my $go_ahead;
+            log_print map( {"$ontape_name: $_" }
+               split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+            sleep $sleepy_time;
+            my $expected_lognum = first { defined($_) } $not_found_lognum, $roll_forward_lognum;
+            if (defined $expected_lognum ) {
+               # mounted logfile is different than ontape expects
+               # go to the one expected
+               $next_lognum = $expected_lognum;
+            } else {
+               # mounted file has log number ontape expected
+               $files_applied++;
+               # mark as applied
+               $logs_href->{$logname}{applied} = $tapenum;
+               $last_applied_lognum = defined $mounted_lognum_2 ? $mounted_lognum_2 : $mounted_lognum;
+               # go on to next log, if any
+               $next_lognum = $last_applied_lognum + 1;
+            }
+            $log_index = get_log_index($logs_aref, $next_lognum);
+            if (defined $log_index) {
+               # break loops - check for prior mount
+               my $logname = $logs_aref->[$log_index];
+               my $prev_tapenum = $logs_href->{$logname}{tapenum};
+               my $prev_lognum = $logs_href->{$logname}{lognum};
+               my $prev_lognum_2 = $logs_href->{$logname}{lognum2};
+               if (not defined $prev_tapenum) {
+                  $go_ahead = 1;
+               } else {
+                  $apply_log_error = 1;
+                  $go_ahead = 0;
+                  log_warn "Logical log backup file $logname "
+                          . "was mounted as tape $prev_tapenum "
+                          . 'for log number'
+                          . (defined $prev_lognum_2 ?
+                               "s $prev_lognum - $prev_lognum_2" :
+                               " $prev_lognum");
+               }
+            } elsif ($lowest_lognum <= $next_lognum and $next_lognum <= $highest_lognum 
+                     or defined $expected_lognum
+                     ) {
+               $apply_log_error = 1;
+               $go_ahead = 0;
+               log_warn "Cannot find logical log backup file for log number $next_lognum";
+            } else {
+               # no more logs to apply
+               $go_ahead = 0;
+            }
+            if ($go_ahead) {
+               # yes, want to apply another logical log backup
+               log_print "Sending \"y\"";
+               $self->send("y\n");
+            } elsif ($online_opt and not $apply_log_error) {
+               # there are no more logs
+               # and there have been no errors
+               # and we want to be On-line
+               # so: no
+               log_print "Sending \"n\"";
+               $self->send("n\n");
+            } else {
+               log_print 'Signaling interrupt';
+#              $self->send("\cC");
+               kill get_signal_number('INT'), $ontape_pid;
+            }
+            exp_continue;
+         }
+         ],
+         [ #7
+         '-re', qr{^\QDo you want to suspend (y), commit (n) or abort (CTRL/C) logical restore?\E}m,
+         sub {
+            my $self = shift;
+            log_print map( {"$ontape_name: $_" }
+               split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+            sleep $sleepy_time;
+            # y - stay in Fast Recovery so can apply more logs
+            # n - go to Quiescent mode
+            # Ctrl-C - shut down IDS for full recovery
+            if ($online_opt and not $apply_log_error) {
+               log_print "Sending \"n\"";
+               $self->send("n\n");
+            } else {
+               log_print "Sending \"y\"";
+               $self->send("y\n");
+            }
+            exp_continue;
+         }
+         ],
+         [ #8
+         '-re', qr{^\QLogical restore failed - A Logical Restore is already in progress.\E}m,
+         sub {
+            my $self = shift;
+            log_print map( {"$ontape_name: $_" }
+               split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+            $apply_log_error = 1;
+            $truncate_log_file = 0;
+            log_warn "Another $ontape_name logical log restore is in progress; this one is terminating";
+            exp_continue;
+         }
+         ],
+         [ #9
+         'eof',
+         sub {
+            my $self = shift;
+            log_print map( {"$ontape_name: $_" }
+               split(m{\r?\n}x, $self->exp_before));
+         }
+         ],
+         [ #10
+         '-re', qr{^\QProgram over.\E\r?\n}m,
+         sub {
+            my $self = shift;
+            log_print map( {"$ontape_name: $_" }
+               split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+            $program_over = 1;
+         }
+         ],
+         [ #11
+         'timeout',
+         sub {
+            # bug in expect? no object parm
+            #my $self = shift;
+            my $self = $ontape;
+            log_print map( {"$ontape_name: $_" }
+               split(m{\r?\n}x, $self->exp_before));
+            log_warn "Interaction with $ontape_name timed-out after $ontape_timeout seconds";
+            log_print 'Signaling terminate';
+            kill get_signal_number('TERM'), $ontape_pid;
+            log_die 'Terminating';
+         }
+         ],
+      );
+      my $ontape_exit_status = $ontape->exp_exitstatus;
+      if (not defined $ontape_exit_status) {
+         if ($program_over) {
+            # Expect didn't catch EOF
+            $ontape_exit_status = 0;
+         } else {
+            log_die "Unexpected return from Expect of $ontape_name",
+                'Expect matched pattern: ' .
+                defined($matched_pattern_position) ? 
+                   $matched_pattern_position : 'undefined',
+                'Expect error: ' .
+                defined($error) ? $error : 'undefined';
+         }
+      }
+      my $ontape_sig = $ontape_exit_status & 127;       # signal
+      my $ontape_rc = $ontape_exit_status >> 8;         # return code
+      if ($ontape_sig) {
+         log_die "$ontape_name died with signal $ontape_sig";
+      } else {
+         if ($ontape_rc or $apply_log_error) {
+            $delete_opt = 0;
+            $exit_code = 1;
+            log_warn "$ontape_name exited with return code $ontape_rc",
+                     "Error(s) occurred while interacting with $ontape_name";
+            log_print 'Setting --nodelete option';
+         }
+      }
+      if ($truncate_log_file) {
+         # make the logical log backup file be empty
+         #  for normal and non-fatal return from ontape
+         truncate $ids_logical_log_backup_name, 0
+            or log_die 'Cannot truncate logical log backup file ' .
+                   "$ids_logical_log_backup_name ($OS_ERROR)";
+         log_print 'Logical backup log file '
+                 . "$ids_logical_log_backup_name was truncated"
+            if $verbose_opt;
+      } else {
+         log_print 'Logical backup log file '
+                 . "$ids_logical_log_backup_name was NOT truncated"
+            if $verbose_opt;
+      }
+   } else {
+      # test mode output
+      log_print "$ontape_cmdline";
+   }
+   log_print "End $ontape_name";
+   return ($apply_log_error, $last_applied_lognum);
+}
+
+sub mount_log_file {
+# copy the unapplied logical log backup file to the one used by ontape
+   my $logname = shift; # name of log file to copy
+   my $status;
+   my $copy_cmdline;
+   my $copy_path;
+   my $copy_name;
+   if (defined($logname)) {
+      my (undef, undef, $suffix) = fileparse($logname, $gzip_suffix);
+      if ($suffix eq $gzip_suffix) {
+         $copy_name = $gzip_name;
+         $copy_path = $gzip_path;
+         $copy_cmdline = join(' ',
+            $gzip_path,
+            $gzip_opt,
+            $gzip_output,
+            '<', $logname,
+            '>', $ids_logical_log_backup_name,
+         );
+         log_print "Unzipping $logname to $ids_logical_log_backup_name"
+            if $verbose_opt;
+      } else {
+         $copy_name = $cp_name;
+         $copy_path = $cp_path;
+         $copy_cmdline = join(" ",
+            $cp_path,
+            $cp_opt,
+            $cp_output,
+            $logname,
+            $ids_logical_log_backup_name,
+         );
+         log_print "Copying $logname to $ids_logical_log_backup_name"
+            if $verbose_opt;
+      }
+      if (not $test_opt) {
+         log_print $copy_cmdline
+            if $verbose_opt;
+         my (@copy_out) = qx{$copy_cmdline};    # here's where gzip/cp is run
+         my $copy_sig = $CHILD_ERROR & 127;     # signal
+         my $copy_rc = $CHILD_ERROR >> 8;       # return code
+         my $copy_msg = "$copy_name exited with return code $copy_rc";
+         if ($CHILD_ERROR == -1) {
+            log_die "Failed to execute $copy_name ($OS_ERROR)";
+         } elsif ($copy_sig) {
+            log_die "$copy_name died with signal $copy_sig";
+         } else {
+            chomp @copy_out;
+            if ($copy_rc) {
+               $delete_opt = 0;
+               $exit_code = 1;
+               log_print map({"$copy_name: $_"} @copy_out);
+               log_warn $copy_msg;
+               log_print 'Setting --nodelete option';
+               $status = 0;
+            } else {
+               # cp ran ok
+               log_print map({"$copy_name: $_"} @copy_out), $copy_msg
+                  if $verbose_opt;
+               $status = 1;
+            }
+         }
+      } else {
+         # test mode output
+         log_print $copy_cmdline,
+                   "End $copy_name";
+         $status = 1;
+      } 
+   }
+   return $status;
+}
+
+sub switch_ids_to_online_mode {
+# run onmode to change IDS to On-line mode
+# option -m is the make On-line option
+   my @onmode_options = qw{-m};
+   my $onmode_cmdline = join(' ', $onmode_path, @onmode_options);
+   log_print "Begin $onmode_name";
+   if (! $test_opt) {
+      log_print $onmode_cmdline
+         if $verbose_opt;
+      my $onmode = Expect->new;
+      $onmode->log_stdout(0);
+      $onmode->raw_pty(1);
+      #$onmode->log_file("${progname}_onmode_expect.log");
+      #$onmode->debug(1);
+      #$onmode->exp_internal(1);
+      #$onmode->autoflush(1);
+      #$|=1;
+      unless (defined $onmode->spawn($onmode_path, @onmode_options)) {
+         log_die "Failed to execute $onmode_name ($OS_ERROR)";
+      }
+      my $onmode_pid = $onmode->pid();
+      my ($matched_pattern_position, $error,
+          $successfully_matching_string, $before_match, $after_match) = 
+      $onmode->expect($onmode_timeout, 
+         [ #1
+         'timeout',
+         sub {
+            # bug in expect? no object parm
+            #my $self = shift;
+            my $self = $onmode;
+            $delete_opt = 0;
+            $exit_code = 1;
+            log_print map( {"$onmode_name: $_" }
+               split(m{\r?\n}x, $self->exp_before));
+            log_warn "Interaction with $onmode_name timed-out after $onmode_timeout seconds";
+            log_print 'Signaling interrupt';
+            kill get_signal_number('INT'), $onmode_pid;
+            log_die 'Terminating';
+         }
+         ],
+         [ #2
+         'eof',
+         sub {
+            my $self = shift;
+            log_print map( {"$onmode_name: $_" }
+               split(m{\r?\n}x, $self->exp_before));
+         }
+         ],
+      );
+      my $onmode_exit_status = $onmode->exp_exitstatus;
+      if (not defined $onmode_exit_status) {
+         log_die "Unexpected return from Expect of $onmode_name",
+             'Expect pattern match: ' .
+             defined $matched_pattern_position ?
+               $matched_pattern_position : 'undefined',
+             "Expect error: " .
+             defined $error ? $error: 'undefined';
+      }
+      my $onmode_sig = $onmode_exit_status & 127;       # signal
+      my $onmode_rc = $onmode_exit_status >> 8;         # return code
+      my $onmode_msg = "$onmode_name exited with return code $onmode_rc";
+      if ($onmode_sig) {
+         log_die "$onmode_name died with signal $onmode_sig";
+      } elsif ($onmode_rc) {
+         $exit_code = 1;
+         $delete_opt = 0;
+         log_warn $onmode_msg;
+         log_print 'Setting --nodelete option';
+      } else {
+         log_print $onmode_msg;
+      }
+   } else {
+      # test mode output
+      log_print "$onmode_cmdline";
+   }
+   log_print "End $onmode_name";
+}
+
+__END__
+
+=head1 NAME
+
+logapply - applies Informix Dynamic Server 9.4 logical log backups.
+
+=head1 VERSION
+
+This documentation corresponds to logapply version 2.2.
+
+=head1 SYNOPSIS
+
+logapply [--[no]apply] [--[no]online] [--[no]delete] [--[no]mail] [--test] [--verbose] [--[no]log] [--[no]print] [--quiet] [--help|--?] [--man] [--version]
+
+example: logapply
+
+=head1 OPTIONS
+
+Options can be abbreviated as long as they are unambiguous.
+Options shown above with B<[no]> can be negated by prefixing the option with "B<no>" or "B<no->".
+
+=over 8
+
+=item B<--apply>
+
+Apply the logical log backup files (this is the default).
+B<--noapply> does not run B<ontape> to apply logical log backup files.
+
+=item B<--online>
+
+Switch IDS to On-line mode.
+B<--noonline> does not run B<ontape> to switch IDS to Quiescent mode and B<onmode> to switch IDS to On-line mode (this is the default).
+
+=item B<--delete>
+
+Delete old logical log backup files (this is the default).
+Only logical log backup files older than the level-0 physical backup file and the last-applied logical log backup are deleted.
+
+=item B<--mail>
+
+Sends mail if warnings or errors are generated.
+Prints warnings or errors to stderr if B<--nomail> is in effect (this is the default).
+
+=item B<--test>
+
+Print what would be done, but don't make any changes.
+
+=item B<--verbose>
+
+Print more details about what is being done.
+
+=item B<--log>
+
+Print program activity to a log file (this is the default).
+
+=item B<--print>
+
+Print program activity to standard output (this is the default).
+
+=item B<--quiet>
+
+Equivalent to specifying B<--nolog> and B<--noprint>.
+
+=item B<--help> or B<--?>
+
+Print synopsis and exit.
+
+=item B<--man>
+
+Print complete help and exit.
+
+=item B<--version>
+
+Print the version number of the program and exit.
+
+=back
+
+=head1 DESCRIPTION
+
+This program applies Informix Dynamic Server 9.4 logical log backup files.
+IDS must be in Fast Recovery mode to apply logical log backup files.
+All logical log backup files containing the logical log number required by B<ontape> and greater are made available to B<ontape>.
+They are copied, one at a time, to the logical log backup file, as the B<ontape> program requests tapes to be mounted.
+After all logs have been applied, the logical log backup file is made empty.
+Logical log backup files significantly older than the level-0 physical backup file and the last applied logical log backup file are deleted.
+
+This program is normally run by the execution of the B<logbkup> program on the production system.
+It is normally run on the disaster recovery system.
+
+=head1 ENVIRONMENT VARIABLES
+
+This program requires certain Informix-specified environment variables to be set.
+If they are not, built-in default values are used to set the environment variables.
+
+=over 8
+
+=item B<INFORMIXDIR>
+
+Specifies the base directory of the Informix Dynamic Server installed product.
+The default value used if B<INFORMIXDIR> is not set is B</Medic/APPS/Informix1>.
+
+=item B<INFORMIXSERVER>
+
+Specifies the name of the IDS server instance.
+The default value used if B<INFORMIXSERVER> is not set is B<ifx1>.
+
+=item B<INFORMIXSQLHOSTS>
+
+Specifies the full path of the IDS sqlhosts file, normally the B<$INFORMIXDIR/etc/sqlhosts> file.
+The default value used if B<INFORMIXSQLHOSTS> is not set is B<$INFORMIXDIR/etc/sqlhosts>.
+
+=item B<ONCONFIG>
+
+Specifies the name of the IDS server configuration file which is located in the B<$INFORMIXDIR/etc> directory.
+The default value used if B<ONCONFIG> is not set is B<onconfig.ifx1>.
+
+=item B<PATH>
+
+B<$INFORMIXDIR/bin> is appended to the B<PATH> if it does not appear within the B<PATH>.
+
+=back
+
+=head1 B<FILES>
+
+=over 8
+
+=item B<onconfig>
+
+The file specified by the B<ONCONFIG> environment variable is accessed to determine certain files used.
+
+The B<LTAPEDEV> parameter setting is used.
+It is the full pathname of the logical log backup file written by B<ontape>.
+This must be identical on production and disaster recovery systems.
+
+The B<TAPEDEV> parameter setting is used.
+It is the full pathname of the level-0 physical backup file written by B<ontape>.
+This must be identical on production and disaster recovery systems.
+
+=item B<Logical Log Backup Files>
+
+This command expects the names of the logical log backup files to match this pattern: B<Log_L1_L2.gz>.
+B<L1> and B<L2> are ten-digit, left-zero-padded numbers that identify the beginning and ending logical logs contained in the file.
+B<_L2> is omitted if the logical log backup file contains only one logical log.
+The files reside in the same directory as the logical log backup file.
+The files are compressed using B<gzip> so much less disc space is used.
+Uncompressed logical log backup files are acceptable. The ".gz" suffix may appear only on compressed files.
+
+=item B<Level-0 Physical Backup File>
+
+The level-0 physical backup file path determined as above.
+This file is created by another process.
+
+A gzip-compressed version of the level-0 physical backup file is used if it exists and meets the following criteria:
+
+The file is in the same directory as the level-0 physical backup file.
+
+The file has the same name as the level-0 physical backup file with ".gz" replacing any file name suffix.
+
+The file's modification timestamp is greater than the level-0 physical backup file or the latter is empty.
+
+=item B<Execution Log>
+
+Unless B<--nolog> is specified, a log of program output is written to B<logapply.log> in the logical log backup directory.
+
+=item B<Execution State File>
+
+A file, B<logapply.state>, is kept in the logical log backup directory.
+It is used to ensure only one copy of B<logapply> runs at a time.
+If this file incorrectly reflects the execution status, it can be deleted, provided B<logapply> is not running.
+
+=back
+
+=head1 B<Programs>
+
+=over 8
+
+=item B<gzip>
+
+The B<gzip> command is used to decompress logical log backup files in gzip format.
+
+=item B<onmode>
+
+The B<onmode> command is used to switch IDS from Quiescent to On-line mode.
+B<onmode> is part of IDS.
+
+=item B<onstat>
+
+The B<onstat> command is used to determine the IDS mode.
+B<onstat> is part of IDS.
+
+=item B<ontape>
+
+The B<ontape> command is used to apply logical log backup files and to switch IDS from Fast Recovery to Quiescent mode.
+B<ontape> is part of IDS.
+
+=back
+
+=head1 BUGS AND LIMITATIONS
+
+Several environmental items are contained within this program:
+
+=over 
+
+=item the default Informix environment variable values
+
+=item the addresses of mail recipients
+
+=back
+
+The level-0 physical backup file and the logical log backup files must be disc files.
+
+The B<LTAPEDEV> parameter in the B<onconfig> file must be identical on the production and disaster recovery systems.
+The B<TAPEDEV> parameter in the B<onconfig> file must be identical on the production and disaster recovery systems.
+
+The directory containing the IDS logical log backup file is used to hold the compressed logical log backup files and the log file from this program.
+This is the path of the B<LTAPEDEV> parameter, excluding the file name.
+
+B<ontape> must be run to switch IDS from Fast Recovery to Quiescent mode.
+B<onmode> is used to switch IDS from Quiescent to On-line mode.
+
+The determination of which logical log backup files to delete is based on the modification timestamps of the level-0 physical backup and the logical log backup files.
+The B<logbkup> program preserves the modification timestamps of files copied from the production to the disaster recovery system.
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (c) 2009 Absolute Performance Inc., LLC. All rights reserved.
+
+This program is the property of Absolute Performance Inc., LLC and may be used only in accordance with a separate license or contract agreement.
+
+THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+
+=cut
+

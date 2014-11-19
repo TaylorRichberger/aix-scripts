@@ -1,0 +1,716 @@
+#!/bin/sh
+# burest
+# (If renamed, change its name in POD, too)
+# Recover Informix Dynamic Server 9.4 instance
+#
+# Copyright (c) 2010 Absolute Performance Inc., LLC. All rights reserved.
+
+# echo "this command has been disabled"; exit;
+# this is a multilanguage script:
+#   1. a shell script to set up the environment
+. /API/ids
+case $(hostname | cut -d . -f 1) in
+   v11100)
+      perl=/usr/opt/perl5/bin/perl
+   ;;
+   v611100)
+      perl=/usr/opt/perl5/bin/perl
+   ;;
+   *)
+      perl=/usr/opt/perl5/bin/perl
+   ;;
+esac
+exec $perl -x -S $0 ${1+"$@"}
+#   2. A Perl script to do the work
+#!perl
+# kluge: align Perl line number so the line after the next line is...
+# line 28
+
+use warnings;
+use strict;
+use FindBin qw{$Bin};
+use lib "$Bin/../lib"; # ApiIdsPha module is in a sibling dir to us
+use ApiIdsPha;
+use English qw{-no_match_vars};
+use Expect;
+use File::Spec::Functions qw{splitpath};
+use Getopt::Long;
+use Net::Domain qw{hostname hostfqdn};
+use Net::SMTP;
+use Pod::Usage;
+#use Data::Dumper;
+#$Data::Dumper::Terse = 1;
+#$Data::Dumper::Sortkeys = 1;
+#$Data::Dumper::Indent = 3;
+sub shut_down_ids;
+sub unzip_physical_backup;
+sub restore_physical_backup;
+
+my $version = '2.2'; # don't forget to change the imbedded POD, too
+
+# $onmode_timeout is how long Expect should wait for a match before quitting
+# This must be great enough for onmode to shut down the database server.
+# The value is 5 minutes
+my $onmode_timeout = 60 * 5;
+
+# $ontape_timeout is how long Expect should wait for a match before quitting
+# This must be great enough for ontape to restore the database from the
+#  level-0 physical backup file
+# The value is 180 minutes or 3 hours
+my $ontape_timeout = 60 * 180;
+
+# $sleepy_time is how long to delay responding to a prompt in Expect code
+# There is some anecdotal evidence that immediate responses to IDS ontape
+# queries causes it to become confused.
+# The value is 1 seconds
+my $sleepy_time = 1;
+
+my (undef, undef, $progname) = splitpath $0;
+my $hostname = hostname();
+my $username = getpwuid $EUID;
+
+# validate command line options
+my ($help_opt, $man_opt, $version_opt, $verbose_opt, $test_opt,) = (0, 0, 0, 0, 0,);
+my ($print_opt, $log_opt, $quiet_opt, $mail_opt, ) = (1, 1, 0, 0,);
+my $restore_opt = 1;
+GetOptions(
+   'help|?' => \$help_opt,
+   'man' => \$man_opt,
+   'version' => \$version_opt,
+   'restore!' => \$restore_opt,
+   'log!' => \$log_opt,
+   'print!' => \$print_opt,
+   'quiet' => \$quiet_opt,
+   'mail!' => \$mail_opt,
+   'test' => \$test_opt,
+   'verbose' => \$verbose_opt,
+) or pod2usage 'Errors were found in the command options.';
+if ($version_opt) {
+   print "$progname version $version\n";
+   exit 1;
+} 
+pod2usage '-verbose' => 2
+   if $man_opt;
+pod2usage
+   if $help_opt;
+
+# quiet option forces off all normal output
+$verbose_opt = $log_opt = $print_opt = 0 if $quiet_opt;
+# don't write to log file if in test mode
+$log_opt = 0 if $test_opt;
+
+# mail and remote host parameters
+my $you_are_here = 0;
+set_mail_from $username . '@' . hostfqdn();
+set_mail_subject "$hostname: $progname status";
+if ($hostname eq 'quattrof14') {
+   $you_are_here = 1;
+   set_mail_host $hostname;
+   set_mail_to(
+      'bart@idmcnet.com',
+   );
+} elsif ($hostname eq 'miata') {
+   $you_are_here = 1;
+   set_mail_host $hostname;
+   set_mail_to(
+      'bart@idmcnet.com',
+   );
+} elsif ($hostname eq 'v11100') {
+   $you_are_here = 1;
+   set_mail_host 'crpexca02';
+   set_mail_to(
+      'helpdesk@integramed.com',
+      'csteam@absolute-performance.com',
+   );
+   set_mail_cc(
+      'ccs@absolute-performance.com',
+      'bws@absolute-performance.com',
+   );
+} elsif ($hostname eq 'v611100') {
+   $you_are_here = 1;
+   set_mail_host 'crpexca02';
+   set_mail_to(
+      'helpdesk@integramed.com',
+      'csteam@absolute-performance.com',
+   );
+   set_mail_cc(
+      'ccs@absolute-performance.com',
+      'bws@absolute-performance.com',
+   );
+} elsif ($hostname eq 'v1100') {
+   $you_are_here = 1;
+   set_mail_host 'crpexca02';
+   set_mail_to(
+      'helpdesk@integramed.com',
+      'csteam@absolute-performance.com',
+   );
+   set_mail_cc(
+      'ccs@absolute-performance.com',
+      'bws@absolute-performance.com',
+   );
+} else {
+   set_mail_host 'localhost';
+   set_mail_to('root');
+}
+
+set_shared_variables({
+   hostname          => $hostname,
+   progname          => $progname,
+   test_opt          => $test_opt,
+   print_opt         => $print_opt,
+   log_opt           => $log_opt,
+   mail_opt          => $mail_opt,
+   verbose_opt       => $verbose_opt,
+}); 
+log_die "Hostname \"$hostname\" is unknown to $progname"
+   unless $you_are_here;
+set_signal_data;
+get_set_environment_variables;
+
+my $gzip_name = 'gzip';
+my $gzip_path = locate_cmd($gzip_name);
+my $gzip_stdout_opt = '-c';
+my $gzip_decompress_opt = '-d';
+my $onmode_name = 'onmode';
+my $onmode_path = locate_cmd($onmode_name);
+my $ontape_name = 'ontape';
+my $ontape_path = locate_cmd($ontape_name);
+
+my %onconfig_parms;
+parse_onconfig(\%onconfig_parms);
+my (
+   undef,
+   $ids_logical_log_backup_dir,
+   $ids_logical_log_backup_name,
+   $ids_logical_log_backup_real_dir,
+   ) = validate_ltapedev(\%onconfig_parms);
+my (
+   $ids_physical_backup_pathname,
+   undef,
+   undef,
+   $ids_physical_backup_mtime,
+   $ids_physical_backup_size,
+   $ids_physical_backup_real_pathname,
+   $ids_physical_backup_zip_pathname, 
+   $ids_physical_backup_zip_mtime,
+   $ids_physical_backup_zip_size,
+   ) = validate_tapedev(\%onconfig_parms);
+# use gzipped level-0 physical backup file only if it has a newer modification
+#   time than the uncompressed one or if the uncompressed one is empty
+my $ids_physical_backup_used_pathname;
+my $ids_physical_backup_used_mtime;
+my $use_gzipped_ids_physical_backup;
+if (defined($ids_physical_backup_zip_pathname) and
+   ( $ids_physical_backup_zip_mtime > $ids_physical_backup_mtime or
+     $ids_physical_backup_size == 0 )
+   ) {
+   $use_gzipped_ids_physical_backup = 1;
+   $ids_physical_backup_used_pathname = $ids_physical_backup_zip_pathname;
+   $ids_physical_backup_used_mtime = $ids_physical_backup_zip_mtime;
+} else {
+   $use_gzipped_ids_physical_backup = 0;
+   $ids_physical_backup_used_pathname = $ids_physical_backup_real_pathname;
+   $ids_physical_backup_used_mtime = $ids_physical_backup_mtime;
+}
+
+chdir $ids_logical_log_backup_real_dir
+   or log_die 'Unable to set current directory to ' .
+          "$ids_logical_log_backup_real_dir ($OS_ERROR)";
+
+umask 0007;     # make all files output from this rw-rw----
+my $exit_code = 0;
+set_running_state;
+start_logging "${progname}.log";
+log_print
+   "Physical backup file",
+   "Onconfig:    $ids_physical_backup_pathname",
+   ($ids_physical_backup_real_pathname eq $ids_physical_backup_pathname ? () :
+      "Real target: $ids_physical_backup_real_pathname"),
+   "  Modification time is " . display_time($ids_physical_backup_mtime),
+   "  Size is " . $ids_physical_backup_size,
+   (defined($ids_physical_backup_zip_pathname) ?
+      ("Gzipped:     $ids_physical_backup_zip_pathname",
+      "  Modification time is " . display_time($ids_physical_backup_zip_mtime),
+      "  Size is " . $ids_physical_backup_zip_size,
+      ) : ()),
+   "Used:        $ids_physical_backup_used_pathname",
+   "Logical log backup directory is $ids_logical_log_backup_dir",
+   ($ids_logical_log_backup_real_dir eq $ids_logical_log_backup_dir ? () :
+      "Real target: $ids_logical_log_backup_real_dir"),
+   if $verbose_opt;
+
+if ($restore_opt and $use_gzipped_ids_physical_backup ) {
+   # unzip_physical_backup;
+}
+if ($restore_opt) {
+   shut_down_ids;
+} else {
+   log_print "$onmode_name skipped per --norestore option";
+}
+if ($restore_opt) {
+   restore_physical_backup;
+} else {
+   log_print "$ontape_name skipped per --norestore option";
+}
+
+at_exit;
+exit $exit_code;
+
+sub unzip_physical_backup {
+   my $unzip_cmdline = join(' ',
+      $gzip_path,
+      $gzip_stdout_opt,
+      $gzip_decompress_opt,
+      '2>&1', # before stdout redirect below
+      $ids_physical_backup_zip_pathname,
+      '>',
+      $ids_physical_backup_real_pathname,
+   );
+   log_print "Unzipping $ids_physical_backup_zip_pathname to $ids_physical_backup_real_pathname";
+   if (! $test_opt) {
+      log_print $unzip_cmdline
+         if $verbose_opt or $test_opt;
+      my @unzip_out = qx{$unzip_cmdline}; # here's where gunzip is run
+      my $unzip_sig = $CHILD_ERROR & 127; # signal
+      my $unzip_rc = $CHILD_ERROR >> 8;   # return code
+      my $unzip_msg = "$gzip_name exited with return code $unzip_rc";
+      if ($CHILD_ERROR == -1) {
+         log_die "Failed to execute $gzip_name ($OS_ERROR)";
+      } elsif ($unzip_sig) {
+         log_die "$gzip_name died with signal $unzip_sig";
+      } elsif ($unzip_rc) {
+         chomp @unzip_out;
+         log_print map({"$gzip_name: $_"} @unzip_out);
+         $restore_opt = 0;
+         $exit_code = 1;
+         log_warn $unzip_msg;
+         log_print "Forcing --norestore";
+      } else {
+         log_print $unzip_msg;
+         utime $ids_physical_backup_zip_mtime, $ids_physical_backup_zip_mtime, $ids_physical_backup_real_pathname
+            or log_die "Unable to set modification time for $ids_physical_backup_real_pathname";
+      }      
+   } else {
+      # test output
+      log_print $unzip_cmdline;
+   }
+   log_print "End unzip";
+   
+}
+
+sub shut_down_ids {
+# run onmode to shut down the IDS service
+# option -k is shutdown option
+# option -y answers "y" internally to onmdode confirmation queries
+   my @onmode_options = qw{-k -y};
+   my $onmode_cmdline = join(' ', $onmode_path, @onmode_options);
+   log_print "Begin $onmode_name";
+   if (! $test_opt) {
+      log_print $onmode_cmdline
+         if $verbose_opt;
+      my $onmode = Expect->new;
+      $onmode->log_stdout(0);
+      $onmode->raw_pty(1);
+      #$onmode->log_file("${progname}_onmode_expect.log");
+      #$onmode->debug(1);
+      #$onmode->exp_internal(1);
+      #$onmode->autoflush(1);
+      #$|=1;
+      unless (defined $onmode->spawn($onmode_path, @onmode_options)) {
+         log_die "Failed to execute $onmode_name ($OS_ERROR)";
+      }
+      my $onmode_pid = $onmode->pid();
+      my ($matched_pattern_position, $error,
+          $successfully_matching_string, $before_match, $after_match) = 
+      $onmode->expect($onmode_timeout, 
+         [ #1
+         'timeout',
+         sub {
+            # bug in expect? no object parm
+            #my $self = shift;
+            my $self = $onmode;
+            $restore_opt = 0;
+            $exit_code = 1;
+            log_print map( {"$onmode_name: $_" }
+               split(m{\r?\n}x, $self->exp_before));
+            log_warn "Interaction with $onmode_name timed-out after $onmode_timeout seconds";
+            log_print
+               'Setting --norestore option',
+               'Signaling interrupt';
+            kill get_signal_number('INT'), $onmode_pid;
+            log_die 'Terminating';
+         }
+         ],
+         [ #2
+         'eof',
+         sub {
+            my $self = shift;
+            log_print map( {"$onmode_name: $_" }
+               split(m{\r?\n}x, $self->exp_before));
+         }
+         ],
+      );
+      my $onmode_exit_status = $onmode->exp_exitstatus;
+      if (not defined $onmode_exit_status) {
+         log_die "Unexpected return from Expect of $onmode_name",
+             'Expect pattern match: ' .
+             (defined $matched_pattern_position ?
+               $matched_pattern_position : 'undefined'),
+             "Expect error: " .
+             (defined $error ? $error: 'undefined');
+      }
+      my $onmode_sig = $onmode_exit_status & 127;       # signal
+      my $onmode_rc = $onmode_exit_status >> 8;         # return code
+      my $onmode_msg = "$onmode_name exited with return code $onmode_rc";
+      if ($onmode_sig) {
+         log_die "$onmode_name died with signal $onmode_sig";
+      } elsif ($onmode_rc) {
+         $exit_code = 1;
+         $restore_opt = 0;
+         log_warn $onmode_msg;
+         log_print "Forcing --norestore option";
+      } else {
+         log_print $onmode_msg;
+      }
+   } else {
+      # test mode output
+      log_print "$onmode_cmdline";
+   }
+   log_print "End $onmode_name";
+}
+
+sub restore_physical_backup {
+# run ontape to restore level-0 physical backup file
+   # -p option directs ontape to restore the level-0 physical backup file
+   my @ontape_options = qw{-p};
+   my $ontape_cmdline = join(' ', $ontape_path, @ontape_options);
+   log_print "Begin $ontape_name";
+   if (! $test_opt) {
+      log_print $ontape_cmdline
+         if $verbose_opt;
+      my $program_over = 0;
+      my $ontape = Expect->new;
+      $ontape->log_stdout(0);
+      $ontape->raw_pty(1);
+      #$ontape->log_file("${progname}_ontape_expect.log");
+      #$ontape->debug(1);
+      #$ontape->exp_internal(1);
+      #$ontape->autoflush(1);
+      #$|=1;
+      unless (defined $ontape->spawn($ontape_path, @ontape_options)) {
+         log_die "Failed to execute $ontape_name ($OS_ERROR)";
+      }
+      my $ontape_pid = $ontape->pid();
+      my ($matched_pattern_position, $error,
+          $successfully_matching_string, $before_match, $after_match) = 
+      $ontape->expect($ontape_timeout, 
+         [ #1
+         '-re', qr{^Please mount tape (\d+) on .* and press Return to continue \Q...\E\s*}m,
+         sub {
+            my $self = shift;
+            log_print map( {"$ontape_name: $_" }
+               split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+            sleep $sleepy_time;
+            log_print 'Sending return';
+            $self->send("\n");
+            exp_continue;
+         }
+         ],
+         [ #2
+         '-re', qr{^\QContinue restore? (y/n)\E}m,
+         sub {
+            my $self = shift;
+            log_print map( {"$ontape_name: $_" }
+               split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+            sleep $sleepy_time;
+            log_print "Sending \"y\"";
+            $self->send("y\n");
+            exp_continue;
+         }
+         ],
+         [ #3
+         '-re', qr{^\QDo you want to back up the logs? (y/n)\E}m,
+         sub {
+            my $self = shift;
+            log_print map( {"$ontape_name: $_" }
+               split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+            sleep $sleepy_time;
+            log_print "Sending \"n\"";
+            $self->send("n\n");
+            exp_continue;
+         }
+         ],
+         [ #4
+         '-re', qr{^\QRestore a level 1 archive (y/n)\E\s*}m,
+         sub {
+            my $self = shift;
+            log_print map( {"$ontape_name: $_" }
+               split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+            sleep $sleepy_time;
+            log_print "Sending \"n\"";
+            $self->send("n\n");
+            exp_continue;
+         }
+         ],
+         [ #5
+         'eof',
+         sub {
+            my $self = shift;
+            log_print map( {"$ontape_name: $_" }
+               split(m{\r?\n}x, $self->exp_before));
+         }
+         ],
+         [ #6
+         '-re', qr{^\QProgram over.\E\r?\n}m,
+         sub {
+            my $self = shift;
+            log_print map( {"$ontape_name: $_" }
+               split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+            $program_over = 1;
+         }
+         ],
+         [ #7
+         'timeout',
+         sub {
+            # bug in expect? no object parm
+            #my $self = shift;
+            my $self = $ontape;
+            $exit_code = 1;
+            log_print map( {"$ontape_name: $_" }
+               split(m{\r?\n}x, $self->exp_before));
+            log_warn "Interaction with $ontape_name timed-out after $ontape_timeout seconds";
+            log_print 'Signaling terminate';
+            kill get_signal_number('TERM'), $ontape_pid;
+            log_die 'Terminating';
+         }
+         ],
+      );
+      my $ontape_exit_status = $ontape->exp_exitstatus;
+      if (not defined $ontape_exit_status) {
+         if ($program_over) {
+            # Expect didn't catch EOF
+            $ontape_exit_status = 0;
+         } else {
+            log_die "Unexpected return from Expect of $ontape_name",
+                'Expect pattern match: ' .
+                defined($matched_pattern_position) ?
+                   $matched_pattern_position : 'undefined',
+                "Expect error: " .
+                defined($error) ? $error: 'undefined';
+         }
+      }
+      my $ontape_sig = $ontape_exit_status & 127;       # signal
+      my $ontape_rc = $ontape_exit_status >> 8;         # return code
+      my $ontape_msg = "$ontape_name exited with return code $ontape_rc";
+      if ($ontape_sig) {
+         log_die "$ontape_name died with signal $ontape_sig";
+      } else {
+         if ($ontape_rc) {
+            $exit_code = 1;
+            log_warn "$ontape_msg";
+         } else {
+            log_print $ontape_msg;
+         }
+      }
+   } else {
+      # test mode output
+      log_print "$ontape_cmdline";
+   }
+   log_print "End $ontape_name";
+}
+
+__END__
+
+=head1 NAME
+
+burest - restores an Informix Dynamic Server 9.4 level-0 physical backup file.
+
+=head1 VERSION
+
+This documentation corresponds to burest version 2.2.
+
+=head1 SYNOPSIS
+
+burest [--[no]restore] [--[no]mail] [--test] [--verbose] [--[no]log] [--[no]print] [--quiet] [--help|--?] [--man] [--version]
+
+example: burest
+
+=head1 OPTIONS
+
+Options can be abbreviated as long as they are unambiguous.
+Options shown above with B<[no]> can be negated by prefixing the option with "B<no>" or "B<no->".
+
+=over 8
+
+=item B<--restore>
+
+Restore the level-0 physical backup file (this is the default).
+
+=item B<--mail>
+
+Sends mail if warnings or errors are generated.
+Prints warnings or errors to stderr if B<--nomail> is in effect (this is the default).
+
+=item B<--test>
+
+Print what would be done, but don't make any changes.
+
+=item B<--verbose>
+
+Print more details about what is being done.
+
+=item B<--log>
+
+Print program activity to a log file (this is the default).
+
+=item B<--print>
+
+Print program activity to standard output (this is the default).
+
+=item B<--quiet>
+
+Equivalent to specifying B<--nolog> and B<--noprint>.
+
+=item B<--help> or B<--?>
+
+Print synopsis and exit.
+
+=item B<--man>
+
+Print complete help and exit.
+
+=item B<--version>
+
+Print the version number of the program and exit.
+
+=back
+
+=head1 DESCRIPTION
+
+This program restores an Informix Dynamic Server 9.4 level-0 physical backup file.
+This partially recovers all the databases of an IDS instance.
+Logical log backup files must be applied to recover the instance to the point of failure.
+A separate set of programs, B<logbkup> and B<logapply>, are used to create, copy and apply logical log backup files.
+It is usually run on the disaster recovery system where the level-0 physical backup file has been copied.
+
+It may be run by the B<bucopy> program, running on the production system, when the B<--restore> option is specified to it.
+It is recommended that B<burest> be run directly on the disaster recovery system; the progress of B<burest> can be more directly observed.
+
+=head1 ENVIRONMENT VARIABLES
+
+This program requires certain Informix-specified environment variables to be set.
+If they are not, built-in default values are used to set the environment variables.
+
+=over 8
+
+=item B<INFORMIXDIR>
+
+Specifies the base directory of the Informix Dynamic Server installed product.
+The default value used if B<INFORMIXDIR> is not set is B</Medic/APPS/Informix1>.
+
+=item B<INFORMIXSERVER>
+
+Specifies the name of the IDS server instance.
+The default value used if B<INFORMIXSERVER> is not set is B<ifx1>.
+
+=item B<INFORMIXSQLHOSTS>
+
+Specifies the full path of the IDS sqlhosts file, normally the B<$INFORMIXDIR/etc/sqlhosts> file.
+The default value used if B<INFORMIXSQLHOSTS> is not set is B<$INFORMIXDIR/etc/sqlhosts>.
+
+=item B<ONCONFIG>
+
+Specifies the name of the IDS server configuration file which is located in the B<$INFORMIXDIR/etc> directory.
+The default value used if B<ONCONFIG> is not set is B<onconfig.ifx1>.
+
+=item B<PATH>
+
+B<$INFORMIXDIR/bin> is appended to the B<PATH> if it does not appear within the B<PATH>.
+
+=back
+
+=head1 B<FILES>
+
+=over 8
+
+=item B<onconfig>
+
+The file specified by the B<ONCONFIG> environment variable is accessed to determine certain files used.
+
+The B<LTAPEDEV> parameter setting is used.
+It is the full pathname of the logical log backup file written by B<ontape>.
+This must be identical on production and disaster recovery systems.
+
+The B<TAPEDEV> parameter setting is used.
+It is the full pathname of the level-0 physical backup file written by B<ontape>.
+This must be identical on production and disaster recovery systems.
+
+=item B<Level-0 Physical Backup File>
+
+The level-0 physical backup file path is determined as above.
+This file is created by another process.
+
+A gzip-compressed version of the level-0 physical backup file is used if it exists and meets the following criteria:
+
+The file is in the same directory as the level-0 physical backup file.
+
+The file has the same name as the level-0 physical backup file with ".gz" replacing any file name suffix.
+
+The file's modification timestamp is greater than the level-0 physical backup file or the latter is empty.
+
+=item B<Execution Log>
+
+Unless B<--nolog> is specified, a log of program output is written to B<burest.log> in the logical log backup directory.
+
+=back
+
+=head1 B<Programs>
+
+=over 8
+
+=item B<gzip>
+
+The B<gzip> command is used to uncompress the level-0 physical backup file.
+
+=item B<onmode>
+
+The B<onmode> command is used to shut down the IDS server before the physical restore begins.
+B<onmode> is part of IDS.
+
+=item B<ontape>
+
+The B<ontape> command is used to restore the level-0 physical backup file.
+B<ontape> is part of IDS.
+
+=back
+
+=head1 BUGS AND LIMITATIONS
+
+Several environmental items are contained within this program:
+
+=over 
+
+=item the default Informix environment variable values
+
+=item the addresses of mail recipients
+
+=back
+
+The level-0 physical backup file and the logical log backup files must be disc files.
+
+The B<LTAPEDEV> parameter in the B<onconfig> file must be identical on the production and disaster recovery systems.
+The B<TAPEDEV> parameter in the B<onconfig> file must be identical on the production and disaster recovery systems.
+
+The directory containing the logical log backup file is used to hold the log file from this program.
+This is the path of the B<LTAPEDEV> parameter, excluding the file name.
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (c) 2009 Absolute Performance Inc., LLC. All rights reserved.
+
+This program is the property of Absolute Performance Inc., LLC and may be used only in accordance with a separate license or contract agreement.
+
+THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+
+=cut
+

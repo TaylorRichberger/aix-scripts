@@ -1,0 +1,65 @@
+#!/bin/sh
+# Redirect file descriptors
+exec 1>>/var/log/"$(basename "$0")".log
+exec 2>>/var/log/"$(basename "$0")".err
+
+LASTRUN=/tmp/"$(basename "$0")".lastrun
+
+echo $(date +"%F %X"): START BACKUP
+
+. /API/ids
+
+# Get TAPEDEV from onconfig
+BACKUP="$(/API/bin/ongetconfig TAPEDEV)"
+BACKUPDIR="$(dirname "${BACKUP}")"
+BACKUPNAME="$(basename "${BACKUP}")"
+
+ZIPBACKUP="${BACKUPDIR}/ifx1arch_$(hostname)_$(date +%m%d%y).gz"
+
+cd "$BACKUPDIR"
+
+# Try to create the fifo if it does not exist
+if ! [ -p "${BACKUP}" ]
+then
+    if [ -e "${BACKUP}" ] && ! [ -s "${BACKUP}" ]
+    then
+        unlink "${BACKUP}"
+    elif [ -e "${BACKUP}" ]
+    then
+        echo "ERROR: $(date +"%F %X") - ${BACKUP} exists, but is not a pipe and is not empty" 1>&2
+        exit 1
+    fi
+
+    mkfifo "${BACKUP}"
+    
+    if ! [ -p "${BACKUP}" ]
+    then
+        echo "ERROR: $(date +"%F %X") - ${BACKUP} does not exist as a pipe and could not be created as one" 1>&2
+        exit 1
+    fi
+    chown informix:informix "${BACKUP}"
+    chmod 664 "${BACKUP}"
+fi
+
+# Run ontape in the background, with a catch that outputs to stderr on a non-zero status
+( ( sleep 1; echo "\n\n" ) | /bin/su informix -c "$INFORMIXDIR/bin/ontape -s -L 0" | tee "${LASTRUN}") &
+
+gzip -c < "${BACKUP}" > "${ZIPBACKUP}" &
+
+# Wait until background jobs finish
+wait
+
+# Recreate backup as blank file in order to allow logapply to work properly
+
+unlink "${BACKUP}"
+touch "${BACKUP}"
+chmod 664 "${BACKUP}"
+chown informix:informix "${BACKUP}"
+
+echo $(date +"%F %X"): FINISH BACKUP
+
+echo $(date +"%F %X"): START MAIL
+
+mail -v -s "$(hostname) ontape $(date +"%F %X")" 'csteam@absolute-performance.com Sergio.martinez@integramed.com helpdesk@integramed.com' < "${LASTRUN}"
+
+echo $(date +"%F %X"): FINISH MAIL

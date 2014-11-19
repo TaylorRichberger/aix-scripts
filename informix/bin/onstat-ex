@@ -1,0 +1,9 @@
+#!/bin/ksh
+host=`hostname`
+onstat -d >/ifxlogs/${host}-onstat-d
+onstat -D >/ifxlogs/${host}-onstat-D
+onstat -p >/ifxlogs/${host}-onstat-p
+onstat -l >/ifxlogs/${host}-onstat-l
+onstat -g mem |cat >/ifxlogs/${host}-onstat-g-mem
+onstat -g seg |cat >/ifxlogs/${host}-onstat-g-seg
+onstat -g ses |cat >/ifxlogs/${host}-onstat-g-ses

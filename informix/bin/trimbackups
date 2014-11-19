@@ -1,0 +1,29 @@
+#!/bin/sh
+# Redirect file descriptors
+exec 1>>/var/log/"$(basename "$0")".log
+exec 2>>/var/log/"$(basename "$0")".err
+
+echo $(date +"%F %X"): START TRIMMING
+
+. /API/ids
+
+# Get TAPEDEV from onconfig
+BACKUPDIR="$(dirname "$(/API/bin/ongetconfig TAPEDEV)")"
+BACKUPNAME="$(basename "$(/API/bin/ongetconfig TAPEDEV)")"
+
+cd "$BACKUPDIR"
+
+COUNT="$1"
+
+PREVCOUNT="$(ls "${BACKUPDIR}" | grep -E "${BACKUPNAME}_$(hostname)_[0-9][0-9][0-9][0-9][0-9][0-9].gz" | wc -l | tr -d '[[:space:]]')"
+
+LC_ALL=C perl -- /API/bin/trimbackups.pl -d"${BACKUPDIR}" -c"${COUNT}" -b"${BACKUPNAME}" -h"$(hostname)"
+ 
+POSTCOUNT="$(ls "${BACKUPDIR}" | grep -E "${BACKUPNAME}_$(hostname)_[0-9][0-9][0-9][0-9][0-9][0-9].gz" | wc -l | tr -d '[[:space:]]')"
+
+if [ "${POSTCOUNT}" -ne "${COUNT}" ]
+then
+    echo $(date +"%F %X"): Post-trimmed log count "($POSTCOUNT)" is not equal to the desired count of $COUNT >&2
+fi
+
+echo $(date +"%F %X"): FINISH TRIMMING

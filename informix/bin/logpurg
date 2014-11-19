@@ -1,0 +1,442 @@
+#!/bin/sh
+# logbkup
+# (If renamed, change its name in POD, too)
+# Manage Informix Dynamic Server 9.4 logical log backup files
+#  between production and disaster recovery systems
+# Copyright (c) 2010 Absolute Performance Inc., LLC. All rights reserved.
+
+# echo "this command has been disabled"; exit;
+# this is a multilanguage script:
+#   1. a shell script to set up the environment
+. /API/ids
+case $(hostname | cut -d . -f 1) in
+   v11100)
+      perl=/usr/opt/perl5/bin/perl
+   ;;
+   v611100)
+      perl=/usr/opt/perl5/bin/perl
+   ;;
+   *)
+      perl=/usr/bin/perl  
+   ;;
+esac
+exec $perl -x -S $0 ${1+"$@"}
+#   2. A Perl script to do the work
+#!perl
+# kluge: align Perl line number so the line after the next line is...
+# line 28
+
+use warnings;
+use strict;
+use FindBin qw{$Bin};
+use lib "$Bin/../lib"; # ApiIdsPha module is in a sibling dir to us
+use ApiIdsPha;
+use English qw{-no_match_vars};
+use Expect;
+use Fcntl qw{:mode};
+use File::Listing qw{parse_dir};
+use File::Spec::Functions qw{splitpath};
+use File::stat;
+use Getopt::Long;
+use IO::Dir;
+use List::Util qw{max};
+use Net::Domain qw{hostname hostfqdn};
+use Pod::Usage;
+#use Data::Dumper;
+#$Data::Dumper::Terse = 1;
+#$Data::Dumper::Sortkeys = 1;
+#$Data::Dumper::Indent = 3;
+sub create_logical_log_backup;
+sub copy_logical_log_backup;
+sub get_remote_logical_log_backup_files; 
+sub copy_logs_to_remote_system;
+sub submit_logapply_job;
+
+my $version = '2.2'; # don't forget to change the imbedded POD, too
+
+# These are on the remote (disaster recovery) system
+# name and path of logapply
+my $logapply_name = 'logapply';
+my $logapply_path = '/API/bin/logapply';
+
+# Maximum difference between level-0 physical backup file and logical log backup file,
+# in seconds. Logical log backups are kept until they are more 
+# than this much older than the level-0 physical backup file.
+# The value is 36 hours
+my $max_time_diff = 3600 * 36;
+
+# $ontape_timeout is how long Expect should wait for a match before quitting
+# This must be great enough for ontape to create a logical log backup file.
+# The value is 20 minutes
+my $ontape_timeout = 60 * 20;
+
+# $sleepy_time is how long to delay responding to a prompt in Expect code
+# There is some anecdotal evidence that immediate responses to IDS ontape
+# queries causes it to become confused.
+# The value is 1 seconds
+my $sleepy_time = 1;
+
+# IDS server modes reported by onstat -
+my $ids_fast_recovery = 'Fast Recovery';
+my $ids_fast_recovery_ckpt_req = 'Fast Recovery (CKPT REQ)';
+my $ids_quiescent = 'Quiescent';
+my $ids_on_line = 'On-Line';
+
+# Logical log backup file name format is: Log_L_L.gz
+#  where "L" represents the logical log number from ontape
+#  with 10 digits (this pattern occurs 1 or 2 times)
+# Used to match logical log backup file name
+my $log_match_regex =
+   qr{
+      \A                # beginning of string
+      Log_              # literal
+      (\d{10})          # (capture) ten digits
+      (?:_(\d{10}))?    # optional, _ and (capture) ten digits
+      (?:\.gz)?         # optional .gz
+      \Z                # end of string
+   }ox;
+# Used to generate logical log backup file name
+my $logical_log_backup_prefix = 'Log'; 
+my $log_number_format = '_%10.10d';
+my $gzip_suffix = '.gz';
+
+my (undef, undef, $progname) = splitpath $0;
+my $hostname = hostname();
+my $username = getpwuid $EUID;
+
+# validate command line options
+my ($help_opt, $man_opt, $version_opt, $verbose_opt, $test_opt,) = (0, 0, 0, 0, 0,);
+my ($print_opt, $log_opt, $quiet_opt, $mail_opt, ) = (1, 1, 0, 0,);
+my $ssh_opt = 1;
+my $backup_opt = 1;
+my $current_opt = 0;
+my $zip_opt = 1;
+my $copy_logs_opt = 0;
+my $apply_opt = 0;
+my $delete_opt = 1;
+GetOptions(
+   'help|?' => \$help_opt,
+   'man' => \$man_opt,
+   'version' => \$version_opt,
+   'backup!' => \$backup_opt,
+   'current!' => \$current_opt,
+   'zip!' => \$zip_opt,
+   'delete!' => \$delete_opt,
+   'apply!' => \$apply_opt,
+   'copy!' => \$copy_logs_opt,
+   'ssh!' => \$ssh_opt,
+   'log!' => \$log_opt,
+   'print!' => \$print_opt,
+   'quiet' => \$quiet_opt,
+   'mail!' => \$mail_opt,
+   'test' => \$test_opt,
+   'verbose' => \$verbose_opt,
+) or pod2usage 'Errors were found in the command options.';
+if ($version_opt) {
+   print "$progname version $version\n";
+   exit 1;
+} 
+pod2usage '-verbose' => 2
+   if $man_opt;
+pod2usage
+   if $help_opt;
+
+# quiet option forces off all normal output
+$verbose_opt = $log_opt = $print_opt = 0 if $quiet_opt;
+# don't write to log file if in test mode
+$log_opt = 0 if $test_opt;
+
+set_shared_variables({
+   hostname          => $hostname,
+   progname          => $progname,
+   test_opt          => $test_opt,
+   print_opt         => $print_opt,
+   log_opt           => $log_opt,
+   mail_opt          => $mail_opt,
+   verbose_opt       => $verbose_opt,
+   log_match_regex   => $log_match_regex,
+}); 
+set_signal_data;
+get_set_environment_variables;
+
+my $at_name = 'at';
+my $at_path = locate_cmd($at_name);
+my $at_output = '2>&1';
+my $cp_name = 'cp';
+my $cp_path = locate_cmd($cp_name);
+my $cp_opt = '-p';
+my $cp_output = '2>&1';
+my $gzip_name = 'gzip';
+my $gzip_path = locate_cmd($gzip_name);
+my $gzip_opt = '-c';
+my $gzip_output = '2>&1';
+my $ls_name = 'ls';
+my $ls_path  = locate_cmd($ls_name);
+my $ls_opt = '-l';
+my $ls_output = '2>&1';
+my $ontape_name = 'ontape';
+my $ontape_path = locate_cmd($ontape_name);
+my ($rshell_name, $rcopy_name, $rcopy_opt);
+if ($ssh_opt) {
+   $rshell_name = 'ssh';
+   $rcopy_name = 'scp';
+   $rcopy_opt = '-pq';
+} else {
+   $rshell_name = 'rsh';
+   $rcopy_name = 'rcp';
+   $rcopy_opt = '-p';
+}
+my $rshell_path = locate_cmd($rshell_name);
+my $rcopy_path = locate_cmd($rcopy_name);
+my $rcopy_output = '2>&1';
+my $lang_kluge = 'LANG=en_US';
+
+my $NO_LOG_DATA = '(no log data)';
+my $PARTIAL_LOG = '(partial)';
+
+chdir "/backup3";
+
+umask 0007;     # make all files output from this rw-rw----
+my $exit_code = 0;
+
+my @created_logs;    # array of beginning and ending logical log numbers from ontape
+my @local_logs;      # array of names of log files
+my %local_log_attrs; # hash keyed by log file name, data is anon hash of size and mtime
+my %remote_logs;     # hash keyed by log file name, data is size
+my $files_created = 0;
+my $files_copied = 0;
+my $files_deleted = 0;
+my $backup_log_error;
+
+my $ids_logical_log_backup_name = "/backup3/ifx1arch";
+create_logical_log_backup \@created_logs;
+
+exit $exit_code;
+
+sub create_logical_log_backup {
+# run ontape to produce logical log backup, including current logical log
+   # ref array of logical log numbers in baclup from ontape
+   my $created_logs_ref = shift;
+   my $sub_return;
+   my $ids_log_stat = stat($ids_logical_log_backup_name) or
+      log_die "Stat of $ids_logical_log_backup_name failed ($OS_ERROR)";
+   log_die "$ids_logical_log_backup_name is not a plain file"
+         unless S_ISREG($ids_log_stat->mode);
+   if ($ids_log_stat->size) {
+      # IDS logical log backup file is not empty
+	  system("cat /dev/null > $ids_logical_log_backup_name");
+   } else {
+      my $ontape_rc;
+      # -a option directs ontape to backup logical logs
+      my @ontape_options = qw{-a};
+      my $ontape_cmdline = join(' ', $ontape_path, @ontape_options);
+      log_print "Begin $ontape_name";
+      if (not $test_opt) {
+         log_print "$ontape_cmdline"
+            if $verbose_opt;
+         $backup_log_error = 0;
+         my $no_log_data = 0;
+         my $program_over = 0;
+         my $ontape = Expect->new;
+         $ontape->log_stdout(0);
+         $ontape->raw_pty(1);
+         #$ontape->log_file("${progname}_ontape_expect.log");
+         #$ontape->debug(1);
+         #$ontape->exp_internal(1);
+         #$ontape->autoflush(1);
+         #$|=1;
+         unless (defined $ontape->spawn($ontape_path, @ontape_options)) {
+            log_die "Failed to execute $ontape_name ($OS_ERROR)";
+         }
+         my $ontape_pid = $ontape->pid();
+         my ($matched_pattern_position, $error,
+             $successfully_matching_string, $before_match, $after_match) = 
+         $ontape->expect($ontape_timeout, 
+            [ #1
+            '-re', qr{^Server is in an incompatible state or user authentication failed\.\s*}m,
+            sub {
+               my $self = shift;
+               log_print map( {"$ontape_name: $_" }
+                  split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+               $backup_log_error = 1;
+               exp_continue;
+            }
+            ],
+            [ #1
+            '-re', qr{^Please mount tape (\d+) on .* and press Return to continue \Q...\E\s*}m,
+            sub {
+               my $self = shift;
+               log_print map( {"$ontape_name: $_" }
+                  split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+               sleep $sleepy_time;
+               log_print 'Sending return';
+               $self->send("\n");
+               exp_continue;
+            }
+            ],
+            [ #2
+            '-re', qr{^\QDo you want to back up the current logical log? (y/n)\E\s*}m,
+            sub {
+               my $self = shift;
+               log_print map( {"$ontape_name: $_" }
+                  split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+               sleep $sleepy_time;
+               if ($current_opt) {
+                  log_print "Sending \"y\"";
+                  $self->send("y\n");
+               } else {
+                  log_print "Sending \"n\"";
+                  $self->send("n\n");
+               }
+               exp_continue;
+            }
+            ],
+            [ #3
+            '-re', qr{
+               ^\QThis tape contains the following logical logs:\E\s*\r?\n
+               \s*
+               (\d+)                    # 1st log number (captured)
+               (?:                      # begin optional group 1
+                  \s*
+                  -
+                  \s*
+                  (\d+)                 # 2nd log number (captured)
+                  \s*
+               |
+                  \s*
+                  (\Q$PARTIAL_LOG\E)    # literal (captured)
+                  \s*
+               )?                       # end optional group 1
+               \r?\n                    # end of line
+            }mxo,
+            sub {
+               my $self = shift;
+               log_print map( {"$ontape_name: $_" }
+                  split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+               @{$created_logs_ref} = grep defined $_, $self->matchlist;
+               exp_continue;
+            }
+            ],
+            [ #4
+            '-re', qr{^\QThis tape contains no log data\E\s*\r?\n}m,
+            sub {
+               my $self = shift;
+               log_print map( {"$ontape_name: $_" }
+                  split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+               $no_log_data = 1;
+               exp_continue;
+            }
+            ],
+            [ #5
+            'eof',
+            sub {
+               my $self = shift;
+               log_print map( {"$ontape_name: $_" }
+                  split(m{\r?\n}x, $self->exp_before));
+               # return from expect call
+            }
+            ],
+            [ #6
+            '-re', qr{^\QProgram over.\E\s*\r?\n}m,
+            sub {
+               my $self = shift;
+               log_print map( {"$ontape_name: $_" }
+                  split(m{\r?\n}x, $self->exp_before . $self->exp_match));
+               $program_over = 1;
+            }
+            ],
+            [ #7
+            'timeout',
+            sub {
+            # bug in expect? no object parm
+            #my $self = shift;
+            my $self = $ontape;
+               log_print map( {"$ontape_name: $_" }
+                  split(m{\r?\n}x, $self->exp_before));
+               log_warn "Interaction with $ontape_name timed-out after $ontape_timeout seconds";
+               log_print 'Signaling terminate';
+               kill get_signal_number('TERM'), $ontape_pid;
+               log_die 'Terminating';
+            }
+            ],
+         );
+         my $ontape_exit_status = $ontape->exp_exitstatus;
+         if (not defined $ontape_exit_status) {
+            if ($program_over) {
+               # Expect didn't catch EOF
+               $ontape_exit_status = 0;
+            } else {
+               log_die "Unexpected return from Expect of $ontape_name",
+                   'Expect pattern match: ' .
+                   defined $matched_pattern_position ?
+                      $matched_pattern_position : 'undefined',
+                   "Expect error: " .
+                   defined $error ? $error: 'undefined';
+            }
+         }
+         my $ontape_sig = $ontape_exit_status & 127;       # signal
+         $ontape_rc = $ontape_exit_status >> 8;         # return code
+         if ($ontape_sig) {
+            log_die "$ontape_name died with signal $ontape_sig";
+         } elsif ($ontape_rc or $backup_log_error) {
+            $copy_logs_opt = $delete_opt = $apply_opt = 0;
+            $exit_code = 1;
+            log_warn "$ontape_name exited with return code $ontape_rc",
+                     "Error(s) occurred while interacting with $ontape_name";
+            log_print "Setting --nocopy, --nodelete and --noapply";
+            $ids_log_stat = stat($ids_logical_log_backup_name) or
+               log_die "Stat of $ids_logical_log_backup_name failed ($OS_ERROR)";
+            log_warn "Logical log backup file $ids_logical_log_backup_name is not empty",
+                     "Investigate and correct before running $progname again"
+               if $ids_log_stat->size;
+         } elsif ($no_log_data) {
+            $copy_logs_opt = $delete_opt = $apply_opt = 0;
+            $exit_code = 1;
+            log_warn "No logical log numbers were captured from $ontape_name";
+            log_print 'Setting --nocopy, --nodelete and --noapply';
+            truncate $ids_logical_log_backup_name, 0
+               or log_die 'Cannot truncate logical log backup file ' .
+                      "$ids_logical_log_backup_name ($OS_ERROR)";
+            log_print 'Logical backup log file '
+                      . "$ids_logical_log_backup_name was truncated"
+               if $verbose_opt;
+            $sub_return = 0;
+         } else {
+            my $nlogs = scalar @{$created_logs_ref};
+            if ($nlogs == 2 and $created_logs_ref->[1] eq $PARTIAL_LOG) {
+               $apply_opt = 0;
+               log_print "No complete logical logs were captured from $ontape_name; setting --noapply";
+               truncate $ids_logical_log_backup_name, 0
+                  or log_die 'Cannot truncate logical log backup file ' .
+                         "$ids_logical_log_backup_name ($OS_ERROR)";
+               log_print 'Logical backup log file '
+                         . "$ids_logical_log_backup_name was truncated"
+                  if $verbose_opt;
+               $sub_return = 0;
+            } elsif ($nlogs == 0) {
+               $copy_logs_opt = $delete_opt = $apply_opt = 0;
+               $exit_code = 1;
+               log_warn "No logical log numbers were captured from $ontape_name";
+               log_print 'Setting --nocopy, --nodelete and --noapply';
+               $ids_log_stat = stat($ids_logical_log_backup_name) or
+                  log_die "Stat of $ids_logical_log_backup_name failed ($OS_ERROR)";
+               log_warn "Logical log backup file $ids_logical_log_backup_name is not empty",
+                        "Investigate and correct before running $progname again"
+                  if $ids_log_stat->size;
+               $sub_return = 0;
+            } else {
+               $sub_return = ($ontape_rc == 0 ? 1 : 0);
+            }
+         }
+      } else {
+         # test mode output
+         $ontape_rc = 0;
+         @{$created_logs_ref} = (0, 0);
+         log_print "$ontape_cmdline";
+         $sub_return =  1;
+      }
+   log_print "End $ontape_name";
+   }
+   return $sub_return;
+}
+
