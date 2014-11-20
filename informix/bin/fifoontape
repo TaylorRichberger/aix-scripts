@@ -1,7 +1,16 @@
 #!/bin/sh
+
 # Redirect file descriptors
 exec 1>>/var/log/"$(basename "$0")".log
 exec 2>>/var/log/"$(basename "$0")".err
+
+# First check if this process is already running, since there is some cron broken stuff going on.
+PROCNAME="$0"
+PROGRAMCOUNT="$(ps -ef | grep -F "$0" | grep -Fv grep | wc -l)"
+if [ "$PROGRAMCOUNT" -gt 1 ]; then
+  echo $0 IS ALREADY RUNNING 1>&2
+  exit 1
+fi
 
 LASTRUN=/tmp/"$(basename "$0")".lastrun
 
@@ -9,12 +18,17 @@ echo $(date +"%F %X"): START BACKUP
 
 . /API/ids
 
+# Configurable options
+REMOTELOCATION="VABACKUP01:/Vision_Backups"
+REMOTEMOUNT="/mnt/Vision_Backups"
+
 # Get TAPEDEV from onconfig
 BACKUP="$(/API/bin/ongetconfig TAPEDEV)"
 BACKUPDIR="$(dirname "${BACKUP}")"
 BACKUPNAME="$(basename "${BACKUP}")"
 
-ZIPBACKUP="${BACKUPDIR}/ifx1arch_$(hostname)_$(date +%m%d%y).gz"
+ZIPBACKUPBASENAME="ifx1arch_$(hostname)_$(date +%m%d%y).gz"
+ZIPBACKUP="${BACKUPDIR}/${ZIPBACKUPBASENAME}"
 
 cd "$BACKUPDIR"
 
@@ -41,8 +55,8 @@ then
     chmod 664 "${BACKUP}"
 fi
 
-# Run ontape in the background, with a catch that outputs to stderr on a non-zero status
-( ( sleep 1; echo "\n\n" ) | /bin/su informix -c "$INFORMIXDIR/bin/ontape -s -L 0" | tee "${LASTRUN}") &
+# Run ontape in the background, with a tee that outputs to a file for mailout
+( ( sleep 5; echo "\n" ) | /bin/su informix -c "$INFORMIXDIR/bin/ontape -s -L 0" | tee "${LASTRUN}") &
 
 gzip -c < "${BACKUP}" > "${ZIPBACKUP}" &
 
@@ -63,3 +77,10 @@ echo $(date +"%F %X"): START MAIL
 mail -v -s "$(hostname) ontape $(date +"%F %X")" 'csteam@absolute-performance.com Sergio.martinez@integramed.com helpdesk@integramed.com' < "${LASTRUN}"
 
 echo $(date +"%F %X"): FINISH MAIL
+
+echo $(date +"%F %X"): START COPY TO NFS
+
+mount "${REMOTELOCATION}"
+cp "${ZIPBACKUP}" "${REMOTEMOUNT}/${ZIPBACKUPBASENAME}"
+
+echo $(date +"%F %X"): FINISH COPY TO NFS
