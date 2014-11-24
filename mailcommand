@@ -1,0 +1,104 @@
+#!/usr/bin/perl
+use warnings;
+use strict;
+
+use Time::Local;
+use Mail::SendEasy;
+use Getopt::Std;
+
+sub main;
+sub usage;
+
+main();
+
+sub main
+{
+    my %opts;
+    if (!getopts("a:c:f:hr:s:", \%opts))
+    {
+        Usage();
+        exit(1);
+    }
+
+    if (scalar(@ARGV) != 2)
+    {
+        Usage();
+        exit(1);
+    }
+    
+    if ($opts{h})
+    {
+        Usage();
+        exit(0);
+    }
+
+    my ($command, $subject) = @ARGV;
+
+    open(my $cmd, '-|', $command);
+
+    my @lines = <$cmd>;
+
+    close($cmd);
+
+    my $output = join('', @lines);
+
+    my %hash = (
+        from     => 'csteam@absolute-performance.com',
+        to       => 'csteam@absolute-performance.com',
+        cc       => 'csteam@absolute-performance.com',
+        subject  => $subject,
+        msg      => $output);
+
+
+    if (exists($opts{a}))
+    {
+        $hash{to} = $opts{a};
+    }
+
+    if (exists($opts{c}))
+    {
+        $hash{cc} = $opts{c};
+    }
+
+    if (exists($opts{f}))
+    {
+        $hash{from} = $opts{f};
+    }
+
+    if (exists($opts{r}))
+    {
+        $hash{reply} = $opts{r};
+    }
+
+    my $mail;
+
+    if (exists($opts{s}))
+    {
+        $mail = new Mail::SendEasy(smtp => $opts{s});
+    } else
+    {
+        $mail = new Mail::SendEasy();
+    }
+
+    my $status = $mail->send(%hash);
+
+    if (!$status)
+    {
+        print("Error sending mail:  $mail->{error}");
+        exit 1;
+    }
+}
+
+sub Usage()
+{
+    print qq|$0 {options} {command} {subject}
+    Mail out the output from {command} to specified addresses with {subject} as the subject
+
+        -a {list}       Use in conjunction with -m.  Replace the default mailer list with the comma-separated one specified as an argument
+        -c {list}       Use in conjunction with -m.  Replace the default cc list with the comma-separated one specified as an argument
+        -f {address}    Use in conjunction with -m.  Replace the default from field with a new one
+        -r {address}    Use in conjunction with -m.  Add a reply-to field.
+        -h              Print this help menu
+        -s {address}    Sets SMTP address if necessary.
+|;
+}
