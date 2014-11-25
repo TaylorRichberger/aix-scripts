@@ -59,8 +59,16 @@ sub main
     }
 
     my @outlines;
-
+    my @gids;
     for my $gid (keys(%groups))
+    {
+        push(@gids, $gid);
+        print($gid . "\n");
+    }
+
+    my @sortedgids = sort {$a <=> $b} @gids;
+
+    for my $gid (@sortedgids)
     {
         my $line = "$groups{$gid}{name}:$groups{$gid}{password}:$gid:";
         my $firstuser = 1;
