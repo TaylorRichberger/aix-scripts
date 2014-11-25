@@ -63,7 +63,6 @@ sub main
     for my $gid (keys(%groups))
     {
         push(@gids, $gid);
-        print($gid . "\n");
     }
 
     my @sortedgids = sort {$a <=> $b} @gids;
