@@ -1,0 +1,113 @@
+#!/usr/bin/perl
+use warnings;
+use strict;
+
+use Getopt::Std;
+
+sub main;
+sub usage;
+
+main();
+
+sub main
+{
+    my %opts;
+    if (!getopts("hi:o:s:", \%opts))
+    {
+        Usage();
+        exit(1);
+    }
+
+    if ($opts{h})
+    {
+        Usage();
+        exit(0);
+    }
+
+    my $input;
+    my $output;
+
+    if (exists($opts{i}))
+    {
+        open($input, '<', $opts{i}) or die("cannot open $opts{i}: $!");
+    } else
+    {
+        $input = *STDIN;
+    }
+
+    my @file = <$input>;
+
+    if (exists($opts{i}))
+    {
+        close($input);
+    }
+
+    # set up groups structure
+    my %groups;
+
+    for my $line (@file)
+    {
+        chomp($line);
+        if ($line =~ m/^[^:]*:[^:]*:[^:]*:[^:]*$/)
+        {
+            my ($name, $password, $gid, $userlist) = split(/:/, $line);
+            my @users = split(/,/, $userlist);
+            $groups{$gid}{name} = $name;
+            $groups{$gid}{password} = $password;
+            push(@{$groups{$gid}{users}}, @users);
+        }
+    }
+
+    my @outlines;
+
+    for my $gid (keys(%groups))
+    {
+        my $line = "$groups{$gid}{name}:$groups{$gid}{password}:$gid:";
+        my $firstuser = 1;
+
+        for my $user (@{$groups{$gid}{users}})
+        {
+            if (exists($opts{s}) && ($opts{s} > 0) && (length($line) + 1 + length($user) > $opts{s}))
+            {
+                push(@outlines, $line);
+                $firstuser = 1;
+                $line = "$groups{$gid}{name}:$groups{$gid}{password}:$gid:";
+            }
+            if ($firstuser == 0)
+            {
+                $line .= ',';
+            }
+            $line .= $user;
+            $firstuser = 0;
+        }
+        push(@outlines, $line);
+    }
+
+    if (exists($opts{o}))
+    {
+        open($output, '>', $opts{o}) or die("cannot open $opts{o}: $!");
+    } else
+    {
+        $output = *STDOUT;
+    }
+
+    print $output join("\n", @outlines);
+    print $output "\n";
+
+    if (exists($opts{o}))
+    {
+        close($output);
+    }
+}
+
+sub Usage()
+{
+    print qq|$0 {options}
+    Takes in a group file and outputs a group file with a line limit set
+
+        -h              Print this help menu
+        -i {file}       Input file, defaults to stdin
+        -o {file}       Output file, defaults to stdout
+        -s {size}       Max line size in characters.  0 or negative disables limit.
+|;
+}
