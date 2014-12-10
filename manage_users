@@ -51,15 +51,21 @@ sub menu {
     # routines are loaded as a list of hashes.  Description is self-explanatory, needsUser routines will only run if a user is selected,
     # routine contains a code reference to a sub or a lambda.  This allows routines to be easily and flexibly added and removed.
     push(@routines, { description => "Select User", needsUser => 0, routine => \&sel_user });
+    push(@routines, { description => "Create user account", needsUser => 0, routine => \&create_acct });
+    push(@routines, { description => "Create client account", needsUser => 0, routine => \&create_sftp_acct });
     if ($OS eq 'aix')
     {
         push(@routines, { description => "View User Account Details", needsUser => 1, routine => \&acct_detail });
         push(@routines, { description => "Change User Account Details", needsUser => 1, routine => \&chg_acct_detail });
         push(@routines, { description => "Reset password and unlock account", needsUser => 1, routine => \&fix_acct });
         push(@routines, { description => "Unlock account without resetting password", needsUser => 1, routine => \&unlock_acct });
+    } else
+    {
+        push(@routines, { description => "View User Account Details", needsUser => 1, routine => \&acct_detail_linux });
+        push(@routines, { description => "Change User Account Details", needsUser => 1, routine => \&chg_acct_detail_linux });
+        push(@routines, { description => "Reset password and unlock account", needsUser => 1, routine => \&fix_acct_linux });
+        push(@routines, { description => "Unlock account without resetting password", needsUser => 1, routine => \&unlock_acct_linux });
     }
-    push(@routines, { description => "Create new account", needsUser => 0, routine => \&create_acct });
-    push(@routines, { description => "Create sftp account", needsUser => 0, routine => \&create_sftp_acct });
     push(@routines, { description => "Remove user account", needsUser => 1, routine => \&rm_acct });
     if (defined($ijs) && (length($ijs) > 0))
     {
@@ -123,6 +129,11 @@ sub sel_user () {
         my $usr_index = <>;
         chomp $usr_index;
         ($user{name}, $user{password}, $user{uid}, $user{gid}, $user{comment}, $user{home}, $user{shell}) = split(':', $matches[$usr_index]);
+        $user{pgrp} = `sudo id -g -n $user{name}`;
+        chomp($user{pgrp});
+        @{$user{groups}} = split(/\s+/, `sudo id -G -n $user{name}`);
+        shift(@{$user{groups}});
+        chomp(@{$user{groups}});
     } else
     {
         print "NO MATCHES FOUND FOR SEARCH OF '$search_str'\n";
@@ -133,7 +144,6 @@ sub sel_user () {
 
 sub acct_detail () {
     my @lsuser = split(' ',`sudo lsuser $user{name}`);
-    my $username = shift @lsuser;
     my %userdetail;
     foreach my $user (@lsuser) {
         chomp;
@@ -143,7 +153,7 @@ sub acct_detail () {
         }
     }
     system("clear");
-    print "username:                 $username\n";
+    print "username:                 $user{name}\n";
     print "primary group:            $userdetail{'pgrp'}\n";
     print "groups:                   $userdetail{'groups'}\n";
     print "shell:                    $userdetail{'shell'}\n";
@@ -153,6 +163,20 @@ sub acct_detail () {
     print "unsuccessful login count: $userdetail{'unsuccessful_login_count'}\n";
     print "last successful login:    " . scalar(localtime($userdetail{'time_last_login'})) . "\n";
     print "last unsuccessful login:  " . scalar(localtime($userdetail{'time_last_unsuccessful_login'})) . "\n";
+    print "Press enter to continue: ";
+    my $input = <>;
+}
+
+sub acct_detail_linux () {
+    system("clear");
+    print "username:    $user{name}\n";
+    print "pgroup:      $user{pgrp}\n";
+    print "groups:      " . join(', ', @{$user{groups}}) . "\n";
+    print "uid:         $user{uid}\n";
+    print "gid:         $user{gid}\n";
+    print "details:     $user{comment}\n";
+    print "home:        $user{home}\n";
+    print "shell:       $user{shell}\n";
     print "Press enter to continue: ";
     my $input = <>;
 }
@@ -208,23 +232,85 @@ sub chg_acct_detail () {
     acct_detail();
 }
 
+sub chg_acct_detail_linux {
+    system("clear");
+
+    my $correct = "N";
+
+    my %details;
+
+    while ( $correct !~ /[Yy]/ ) {
+        %details = %user;
+        $details{groups} = join(',', @{$user{groups}});
+
+        my $input;
+        print "Modify account $details{name}\n";
+        print "Enter nothing to keep default\n";
+        print "details [$details{comment}]: ";
+        $input = <>;  chomp $input;
+        $details{comment} = $input if ($input ne "");
+        print "primary group [$details{pgrp}]: ";
+        $input = <>;  chomp $input;
+        $details{pgrp} = $input if ($input ne "");
+        print "groups [$details{groups}]: ";
+        $input = <>;  chomp $input;
+        $details{groups} = $input if ($input ne "");
+        print "shell [$details{shell}]: ";
+        $input = <>;  chomp $input;
+        $details{shell} = $input if ($input ne "");
+        print "home [$details{home}]:";
+        $input = <>;  chomp $input;
+        $details{home} = $input if ($input ne "");
+        print "-----------------------------------------------------------\n\n";
+        print "username:                 $details{name}\n";
+        print "details:                  $details{comment}\n";
+        print "primary group:            $details{pgrp}\n";
+        print "groups:                   $details{groups}\n";
+        print "shell:                    $details{shell}\n";
+        print "home:                     $details{home}\n";
+        print "-----------------------------------------------------------\n\n";
+        print "Is this correct? (Y|N) ";
+        $correct = <>;  chomp $correct;
+    }
+    system("sudo usermod -c '$details{comment}' -d '$details{home}' -s '$details{shell}' -g '$details{pgrp}' -G '$details{groups}' $details{name}");
+
+    $user{comment} = $details{comment};
+    $user{home} = $details{home};
+    $user{shell} = $details{shell};
+    $user{pgrp} = $details{pgrp};
+    @{$user{groups}} = split(/,/, $details{groups});
+
+    acct_detail_linux();
+}
+
 sub fix_acct () {
     print "Resetting account: $user{name} for " . (split(',', $user{comment}))[0] . "\n";
-    system("sudo chuser unsuccessful_login_count=0 account_locked=false $user{name}");
     system("sudo passwd $user{name}");
     print "\nForce password change? (Y|N):";
     my $chpw = <>; chomp $chpw;
     if ($chpw =~ /[Nn]/) {
         system("sudo pwdadm -c $user{name}");
     }
-    print "\nUser Successfully Updated!\n";
-    print "\nPress Enter to Continue\n";
-    my $v = <>;
+    unlock_acct();
 }
 
 sub unlock_acct () {
     print "Unlocking account: $user{name} for " . (split(',', $user{comment}))[0] . "\n";
     system("sudo chuser unsuccessful_login_count=0 account_locked=false $user{name}");
+    print "\nUser Successfully Unlocked!\n";
+    print "\nPress Enter to Continue\n";
+    my $v = <>;
+}
+sub fix_acct_linux () {
+    print "Resetting account: $user{name} for $user{comment}\n";
+    system("sudo passwd $user{name}");
+    unlock_acct_linux();
+}
+
+sub unlock_acct_linux () {
+    print "Unlocking account: $user{name} for $user{comment}\n";
+    system("sudo passwd -u $user{name}");
+    system("sudo chage -E '-1' -I '-1' -M '-1' -m 0 $user{name}");
     print "\nUser Successfully Unlocked!\n";
     print "\nPress Enter to Continue\n";
     my $v = <>;
