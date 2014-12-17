@@ -111,7 +111,7 @@ sub sel_user () {
     open(my $passwd,"/etc/passwd");
     my @passwdLines = <$passwd>;
     chomp(@passwdLines);
-    my @matches = grep(/$search_str/, @passwdLines);
+    my @matches = grep(/$search_str/i, @passwdLines);
 
     close($passwd);
     system("clear");
