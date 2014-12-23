@@ -2,6 +2,7 @@
 use warnings;
 use strict;
 use Data::Dumper;
+use Time::Piece;
 
 # Boolean value that represents whether this is a FACS system, otherwise it is assumed to be CUBS.
 my $isFacs = (-d "/cache");
@@ -16,6 +17,11 @@ sub unlock_acct ();
 sub create_acct ();
 sub create_sftp_acct ();
 sub rm_acct ();
+sub acct_detail_linux;
+sub chg_acct_detail_linux;
+sub chg_acct_expire_linux;
+sub fix_acct_linux;
+sub unlock_acct_linux;
 sub exit(@);
 
 my %user;
@@ -63,6 +69,7 @@ sub menu {
     {
         push(@routines, { description => "View User Account Details", needsUser => 1, routine => \&acct_detail_linux });
         push(@routines, { description => "Change User Account Details", needsUser => 1, routine => \&chg_acct_detail_linux });
+        push(@routines, { description => "Change User Account Password Expiry", needsUser => 1, routine => \&chg_acct_expire_linux });
         push(@routines, { description => "Reset password and unlock account", needsUser => 1, routine => \&fix_acct_linux });
         push(@routines, { description => "Unlock account without resetting password", needsUser => 1, routine => \&unlock_acct_linux });
     }
@@ -177,6 +184,10 @@ sub acct_detail_linux () {
     print "details:     $user{comment}\n";
     print "home:        $user{home}\n";
     print "shell:       $user{shell}\n";
+    print "\n";
+    print "Expiry information:\n";
+    print `sudo chage -l $user{name}`;
+    print "\n";
     print "Press enter to continue: ";
     my $input = <>;
 }
@@ -283,6 +294,42 @@ sub chg_acct_detail_linux {
     acct_detail_linux();
 }
 
+sub chg_acct_expire_linux {
+    system("clear");
+
+    my $correct = "N";
+
+    my $opts;
+
+    while ( $correct !~ /[Yy]/ ) {
+        $opts = "";
+
+        my $input;
+        print "Modify account $user{name}\n";
+        print "Enter nothing to keep old value (viewable from user account details)\n";
+        print "Expire date (YYYY-MM-DD format.  -1 to disable): ";
+        $input = <>;  chomp $input;
+        $opts .= " -E '$input'" if ($input ne "");
+        print "Number of days of inactivity after password expires to lock account (-1 to disable): ";
+        $input = <>;  chomp $input;
+        $opts .= " -I '$input'" if ($input ne "");
+        print "Minimum number of days between password changes (0 to disable, and let password be changed at any time): ";
+        $input = <>;  chomp $input;
+        $opts .= " -m '$input'" if ($input ne "");
+        print "Maximum number of days between password changes (-1 to disable, making a password never expire): ";
+        $input = <>;  chomp $input;
+        $opts .= " -M '$input'" if ($input ne "");
+        print "Number of days before expiry to warn that a password is going to expire:  ";
+        $input = <>;  chomp $input;
+        $opts .= " -W '$input'" if ($input ne "");
+        print "Is this correct? (Y|N) ";
+        $correct = <>;  chomp $correct;
+    }
+    system("sudo chage $opts '$user{name}'");
+
+    acct_detail_linux();
+}
+
 sub fix_acct () {
     print "Resetting account: $user{name} for " . (split(',', $user{comment}))[0] . "\n";
     system("sudo passwd $user{name}");
@@ -310,7 +357,7 @@ sub fix_acct_linux () {
 sub unlock_acct_linux () {
     print "Unlocking account: $user{name} for $user{comment}\n";
     system("sudo passwd -u $user{name}");
-    system("sudo chage -E '-1' -I '-1' -M '-1' -m 0 $user{name}");
+    system("sudo chage -d " . localtime->strftime('%F') . " $user{name}");
     print "\nUser Successfully Unlocked!\n";
     print "\nPress Enter to Continue\n";
     my $v = <>;
