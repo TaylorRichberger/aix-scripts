@@ -8,24 +8,25 @@ use Time::Piece;
 my $isFacs = (-d "/cache");
 
 sub menu;
-sub cubs_user ();
-sub sel_user ();
-sub acct_detail ();
-sub chg_acct_detail ();
-sub fix_acct ();
-sub unlock_acct ();
-sub create_acct ();
-sub create_sftp_acct ();
-sub rm_acct ();
+sub cubs_user;
+sub get_users;
+sub sel_user;
+sub view_all_users;
+sub acct_detail;
+sub chg_acct_detail;
+sub fix_acct;
+sub unlock_acct;
+sub create_acct;
+sub create_sftp_acct;
+sub rm_acct;
 sub acct_detail_linux;
 sub chg_acct_detail_linux;
 sub chg_acct_expire_linux;
 sub fix_acct_linux;
 sub unlock_acct_linux;
-sub exit(@);
+sub quit;
 
-my %user;
-my $ijs = '/data/IJS';
+my $ijs = '';
 # Allow user creation?
 my $allowcreate = 1;
 # default account stuff
@@ -35,6 +36,8 @@ my $home = "/home/common";
 my $ftphome = "/home/ftp";
 my $sharedhome = 1;
 my $OS = $^O;
+
+my %user;
 
 while (1)
 {
@@ -70,6 +73,7 @@ sub menu {
         push(@routines, { description => "View User Account Details", needsUser => 1, routine => \&acct_detail_linux });
         push(@routines, { description => "Change User Account Details", needsUser => 1, routine => \&chg_acct_detail_linux });
         push(@routines, { description => "Change User Account Password Expiry", needsUser => 1, routine => \&chg_acct_expire_linux });
+        push(@routines, { description => "View All Users", needsUser => 0, routine => \&view_all_users });
         push(@routines, { description => "Reset password and unlock account", needsUser => 1, routine => \&fix_acct_linux });
         push(@routines, { description => "Unlock account without resetting password", needsUser => 1, routine => \&unlock_acct_linux });
     }
@@ -78,7 +82,7 @@ sub menu {
     {
         push(@routines, { description => "Manage CU TCS users", needsUser => 0, routine => \&cubs_user });
     }
-    push(@routines, { description => "Exit\n", needsUser => 0, routine => \&exit });
+    push(@routines, { description => "Exit\n", needsUser => 0, routine => \&quit });
 
     # print routines
     for (my $i = 0; $i < scalar(@routines); $i++)
@@ -107,11 +111,53 @@ sub menu {
     }
 }
 
-sub cubs_user () {
+sub cubs_user {
     system("cd '$ijs'; /uv/bin/uv 'RUN IJS.BP CREATE.USER'");
 }
 
-sub sel_user () {
+sub get_users {
+    my @users;
+    open(my $passwd,"/etc/passwd");
+    my @passwdLines = <$passwd>;
+    close($passwd);
+
+    my @shadowLines = split(/\n/, `sudo cat /etc/shadow`);
+    chomp(@shadowLines);
+
+    for my $line (@passwdLines)
+    {
+        chomp($line);
+        my %user;
+        ($user{name}, $user{password}, $user{uid}, $user{gid}, $user{comment}, $user{home}, $user{shell}) = split(/:/, $line);
+        $user{pgrp} = `sudo id -g -n $user{name}`;
+        chomp($user{pgrp});
+        my $groups = `sudo id -G -n $user{name}`;
+        chomp($groups);
+        $groups =~ s/$user{pgrp}//;
+        $groups =~ s/^\s+|\s+$//g;
+        @{$user{groups}} = split(/\s+/, $groups);
+        my $shadow = (grep(/^$user{name}:/, @shadowLines))[0];
+        my $dummy;
+        if (defined($shadow))
+        {
+            ($dummy, $user{password}, $user{lastchange}, $user{minage}, $user{maxage}, $user{warningperiod}, $user{inactivityperiod}, $user{expirationdate}, $user{reserved}) = split(/:/, $shadow);
+        } else
+        {
+            $user{password} = '';
+            $user{lastchange} = '';
+            $user{minage} = '';
+            $user{maxage} = '';
+            $user{warningperiod} = '';
+            $user{inactivityperiod} = '';
+            $user{expirationdate} = '';
+            $user{reserved} = '';
+        }
+        push(@users, \%user);
+    }
+    return @users;
+}
+
+sub sel_user {
     print "\nEnter username or search string: ";
     my $search_str = <>;
     chomp($search_str);
@@ -126,16 +172,16 @@ sub sel_user () {
     {
         for my $i (0..$#matches) {
             my $match = $matches[$i];
-            my @fields = split(':', $match);
+            my @fields = split(/:/, $match);
             my $name = $fields[0];
             my $fullname = $fields[4];
 
-            print "$i) $name\t" . (split(',', $fullname))[0] . "\n";
+            print "$i) $name\t" . (split(/,/, $fullname))[0] . "\n";
         }
         print "Select user index: ";
         my $usr_index = <>;
         chomp $usr_index;
-        ($user{name}, $user{password}, $user{uid}, $user{gid}, $user{comment}, $user{home}, $user{shell}) = split(':', $matches[$usr_index]);
+        ($user{name}, $user{password}, $user{uid}, $user{gid}, $user{comment}, $user{home}, $user{shell}) = split(/:/, $matches[$usr_index]);
         $user{pgrp} = `sudo id -g -n $user{name}`;
         chomp($user{pgrp});
         @{$user{groups}} = split(/\s+/, `sudo id -G -n $user{name}`);
@@ -149,12 +195,67 @@ sub sel_user () {
     }
 }
 
-sub acct_detail () {
-    my @lsuser = split(' ',`sudo lsuser $user{name}`);
+sub view_all_users {
+    my @users = get_users();
+    my @sortoptions = (['name', 'User Name'], ['comment', 'Comment Field'], ['lastchange', 'Last Password Change'], ['expirationdate', 'Days until expiration'], ['uid', 'User ID'], ['pgrp', 'Primary Group'], ['maxage', 'Max Password Age']);
+    my $option;
+    while ((!defined($option)) or (length($option) == 0) or (($option < 0) or ($option > $#sortoptions)))
+    {
+        system("clear");
+        for my $i (0..$#sortoptions)
+        {
+            print("$i) $sortoptions[$i]->[1]\n");
+        }
+        print("Select sort field: ");
+        $option = <>;
+        chomp($option);
+    }
+    my $sort = @sortoptions[$option]->[0];
+    my @susers = sort {
+            if (((!exists($a->{$sort})) or (length($a->{$sort}) == 0)) and ((!exists($b->{$sort})) or (length($b->{$sort}) == 0)))
+            {
+                return 0;
+            } elsif ((!exists($a->{$sort})) or (length($a->{$sort}) == 0))
+            {
+                return -1;
+            } elsif ((!exists($b->{$sort})) or (length($b->{$sort}) == 0))
+            {
+                return 1;
+            } else
+            {
+                if (($a->{$sort} =~ m/^\d+$/) and ($b->{$sort} =~ m/^\d+$/))
+                {
+                    return $a->{$sort} <=> $b->{$sort};
+                } else
+                {
+                    return $a->{$sort} cmp $b->{$sort};
+                }
+            }
+        } @users;
+    system("clear");
+
+    printf("%15.15s %25.25s %25.25s %25.25s %15.15s\n", 'Username', 'Comment', 'Last password change', 'Days until expire', 'Max pass age');
+    printf("%15.15s %25.25s %25.25s %25.25s %15.15s\n", '--------', '-------', '--------------------', '-----------------', '------------');
+    # Current date in days since the epoch
+    my $date = int(time/86400);
+    for my $user (@susers)
+    {
+        my $lastchange = ((length($user->{lastchange}) > 0) ? (($date - $user->{lastchange}) . ' days ago') : 'N/A');
+        my $expiration = ((length($user->{expirationdate}) > 0) ? $date - $user->{expirationdate} : 'Never');
+        my $maxage = ((length($user->{maxage}) > 0) ? $user->{maxage} : 'None');
+        printf("%15.15s %25.25s %25.25s %25.25s %15.15s\n", $user->{name}, $user->{comment}, $lastchange, $expiration, $maxage);
+    }
+
+    print "\n\nPress enter to continue";
+    my $ret = <>;
+}
+
+sub acct_detail {
+    my @lsuser = split(/ /,`sudo lsuser $user{name}`);
     my %userdetail;
     foreach my $user (@lsuser) {
         chomp;
-        my @el = split("=",$user);
+        my @el = split(/=/,$user);
         if ($#el > 0) {
             $userdetail{$el[0]} = $el[1];
         }
@@ -174,7 +275,7 @@ sub acct_detail () {
     my $input = <>;
 }
 
-sub acct_detail_linux () {
+sub acct_detail_linux {
     system("clear");
     print "username:    $user{name}\n";
     print "pgroup:      $user{pgrp}\n";
@@ -192,16 +293,16 @@ sub acct_detail_linux () {
     my $input = <>;
 }
 
-sub chg_acct_detail () {
+sub chg_acct_detail {
     system("clear");
 
-    my @lsuser = split(' ',`sudo lsuser $user{name}`);
+    my @lsuser = split(/ /,`sudo lsuser $user{name}`);
     my $username = shift @lsuser;
     my %userdetail;
 
     foreach my $user (@lsuser) {
         chomp;
-        my @el = split("=",$user);
+        my @el = split(/=/,$user);
         if ($#el > 0) {
             $userdetail{$el[0]} = $el[1];
         }
@@ -330,8 +431,8 @@ sub chg_acct_expire_linux {
     acct_detail_linux();
 }
 
-sub fix_acct () {
-    print "Resetting account: $user{name} for " . (split(',', $user{comment}))[0] . "\n";
+sub fix_acct {
+    print "Resetting account: $user{name} for " . (split(/,/, $user{comment}))[0] . "\n";
     system("sudo passwd $user{name}");
     print "\nForce password change? (Y|N):";
     my $chpw = <>; chomp $chpw;
@@ -341,20 +442,20 @@ sub fix_acct () {
     unlock_acct();
 }
 
-sub unlock_acct () {
-    print "Unlocking account: $user{name} for " . (split(',', $user{comment}))[0] . "\n";
+sub unlock_acct {
+    print "Unlocking account: $user{name} for " . (split(/,/, $user{comment}))[0] . "\n";
     system("sudo chuser unsuccessful_login_count=0 account_locked=false $user{name}");
     print "\nUser Successfully Unlocked!\n";
     print "\nPress Enter to Continue\n";
     my $v = <>;
 }
-sub fix_acct_linux () {
+sub fix_acct_linux {
     print "Resetting account: $user{name} for $user{comment}\n";
     system("sudo passwd $user{name}");
     unlock_acct_linux();
 }
 
-sub unlock_acct_linux () {
+sub unlock_acct_linux {
     print "Unlocking account: $user{name} for $user{comment}\n";
     system("sudo passwd -u $user{name}");
     system("sudo chage -d " . localtime->strftime('%F') . " $user{name}");
@@ -363,7 +464,7 @@ sub unlock_acct_linux () {
     my $v = <>;
 }
 
-sub create_acct () {
+sub create_acct {
     system("clear");
     unless ($allowcreate)
     {
@@ -425,7 +526,7 @@ sub create_acct () {
     my $ret = <>;
 }
 
-sub create_sftp_acct () {
+sub create_sftp_acct {
     system("clear");
     unless ($allowcreate)
     {
@@ -481,7 +582,7 @@ sub create_sftp_acct () {
     my $ret = <>;
 }
 
-sub rm_acct () {
+sub rm_acct {
     system("clear");
     print "##################################################################\n";
     print "ABOUT TO REMOVE USER ACCCOUNT!!!\n";
@@ -501,6 +602,6 @@ sub rm_acct () {
     my $ret = <>;
 }
 
-sub exit(@) {
+sub quit {
     exit @_;
 }
