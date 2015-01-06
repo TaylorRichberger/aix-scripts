@@ -30,11 +30,11 @@ my $ijs = '';
 # Allow user creation?
 my $allowcreate = 1;
 # default account stuff
-my $pgrp = "cubs";
-my $ftpgrp = $pgrp;
-my $home = "/home/common";
+my $pgrp = "users";
+my $ftpgrp = "cubs";
+my $home = "/home";
 my $ftphome = "/home/ftp";
-my $sharedhome = 1;
+my $sharedhome = 0;
 my $OS = $^O;
 
 my %user;
@@ -567,7 +567,7 @@ sub create_sftp_acct {
     my $homedir = "$ftphome/$username";
     my $filesdir = "$homedir/files";
 
-    system("sudo useradd -m -s /bin/false -g $pgrp -d \"$homedir\" -c \"$fullname,$phone,$location,$business,USER,USER\" $username");
+    system("sudo useradd -m -s /bin/false -g $ftpgrp -d \"$homedir\" -c \"$fullname,$phone,$location,$business,USER,USER\" $username");
     system("sudo chown root:$ftpgrp \"$homedir\"");
     system("sudo chmod 755 \"$homedir\"");
 
