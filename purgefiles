@@ -1,0 +1,36 @@
+#!/bin/sh
+
+Usage()
+{
+    cat <<HERE
+    $0 [ deletedlog [ backupdir ]]
+HERE
+}
+
+backupdir=""
+deletedlog="/tmp/deleted.log"
+
+if [ $# -gt 0 ]
+then
+    backupdir="$1"
+fi
+
+if [ $# -gt 1 ]
+then
+    deletedlog="$2"
+fi
+
+FILES="$(find $(for i in hh co pre chi; do echo /data/cubs/$i/data; done) -type f -mtime +7 | grep -E -e '^/data/cubs/hh/data/(TEMP-LETTER2-WORK[0-9][0-9]+|TEMP-LETTER-WORK[0-9][0-9]+|CTAPE-ADVOCATE-MEMO[0-9][0-9]+|TEMP-FILE-[0-9][0-9]+|WORK\.[0-9][0-9]+)(\]D)?$' -e '^/data/cubs/pre/data/(DUPS-FILE-[0-9][0-9]+|WORK\.[0-9][0-9]+)(\]D)?$' -e '^/data/cubs/co/data/(CMDX-POST-PORT[0-9][0-9]+|DUPS-FILE-[0-9][0-9]+|TEMP-LETTER-WORK[0-9][0-9]+|WORK.[0-9][0-9]+)(\]D)?$' -e '^/data/cubs/chi/data/(DUPS-FILE-[0-9][0-9]+|TEMP-LETTER-WORK[0-9][0-9]+|WORK.[0-9][0-9]+)(\]D)?$')"
+
+if [ -n "$FILES" ]
+then
+    if [ -n "$backupdir" ]
+    then
+        mkdir -p "$backupdir"
+        tar -cf- $FILES | gzip -c > "$backupdir"/$(date +%F).tar.gz || exit 1
+    fi
+
+    echo "$FILES" >> $deletedlog
+
+    rm $FILES
+fi

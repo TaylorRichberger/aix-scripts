@@ -574,6 +574,8 @@ sub create_sftp_acct {
     system("sudo mkdir \"$filesdir\"");
     system("sudo chown $username:$ftpgrp \"$filesdir\"");
     system("sudo chmod 700 \"$filesdir\"");
+    system("sudo setfacl -m g:$ftpgrp:rwx \"$filesdir\"");
+    system("sudo setfacl -dm g:$ftpgrp:rwx \"$filesdir\"");
 
     system("sudo passwd $username");
 
