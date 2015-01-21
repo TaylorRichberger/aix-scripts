@@ -3,12 +3,18 @@
 Usage()
 {
     cat <<HERE
-    $0 [ deletedlog [ backupdir ]]
+    $0 [ backupdir [ deletedlog ]]
 HERE
 }
 
 backupdir=""
 deletedlog="/tmp/deleted.log"
+
+if [ "$1" = '-h' ]
+then
+    Usage
+    exit
+fi
 
 if [ $# -gt 0 ]
 then
