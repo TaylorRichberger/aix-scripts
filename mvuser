@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+
+Usage() {
+    cat <<USAGE
+    $0 [-c] [-h] [-k] [-m] [-n new] [-p] username
+        Rename a user, with some special options available
+
+            -c      Copy the home directory to the new location, hardlinking all files
+            -h      Show this help menu and exit
+            -k      Keep the home directory in the existing location
+            -m      Move the home directory to the new location
+            -n      The new login name (defaults to {user}-old if not specified)
+            -p      Move password entries as well
+USAGE
+}
+
+MakeBackup() {
+    for file
+    do
+        if [ -e "$file" ]
+        then
+            cp "$file" "$file-$(date '+%FT%T').backup"
+        fi
+    done
+}
+
+HardCopy() {
+    if [ $# -ne 2 ]
+    then
+        echo "HardCopy needs exactly two arguments" >&2
+        exit 1
+    fi
+    if [ -d "$1" ]
+    then
+        echo "Creating directory $2"
+        mkdir "$2"
+        ls -1 "$1" | while read file
+        do
+            HardCopy "$1/$file" "$2/$file"
+        done
+    elif [ -e "$1" ]
+    then
+        echo "Hard linking $1 to $2"
+        ln "$1" "$2"
+    fi
+}
+
+home=copy
+newname=''
+movepass=0
+
+while getopts chkmn:p opt
+do
+    case $opt in
+        c)
+            home=copy
+            ;;
+
+        h)
+            Usage
+            exit 0
+            ;;
+
+        k)
+            home=keep
+            ;;
+
+        m)
+            home=move
+            ;;
+
+        n)
+            newname="$OPTARG"
+            ;;
+
+        p)
+            movepass=1
+            ;;
+
+        ?)
+            Usage
+            exit 1
+            ;;
+    esac
+done
+
+shift $(($OPTIND - 1))
+
+if [ "$#" -ne 1 ]
+then
+    Usage
+    exit 1
+fi
+
+oldname="$1"
+
+passwdline="$(grep -E "^$oldname:" /etc/passwd)"
+
+if [ -z "$passwdline" ]
+then
+    echo "User $oldname not found in /etc/passwd.  They may not be a unix user, and therefore should not be renamed with this script" >&2
+    exit 1
+fi
+
+if [ -z "$newname" ]
+then
+    newname="${oldname}-old"
+fi
+
+oldhome="$(echo "$passwdline" | awk -F: '{ print $6 }')"
+newhome="$(echo "$oldhome" | sed "s/$oldname/$newname/g")"
+
+if [ "$home" = 'keep' ]
+then
+    echo This script will $home the home directory, $oldhome
+else
+    echo This script will $home the home directory, $oldhome, to $newhome
+fi
+
+echo username will be changed to $newname
+
+if [ "$movepass" -eq 1 ]
+then
+    echo password will be migrated
+else
+    echo password will not be migrated
+fi
+
+printf 'Press anything if this is okay.  Press Ctrl-C to cancel.'
+read d
+
+MakeBackup /etc/group /etc/shadow /etc/passwd /etc/security/lastlog /etc/security/limits /etc/security/user /etc/security/passwd /etc/sudoers
+
+if [ "$home" = 'keep' ]
+then
+    usermod -l "$newname" "$oldname"
+elif [ "$home" = 'move' ]
+then
+    usermod -l "$newname" -d "$newhome" -m "$oldname"
+elif [ "$home" = 'copy' ]
+then
+    HardCopy "$oldhome" "$newhome"
+    usermod -l "$newname" -d "$newhome" "$oldname"
+fi
+
+if [ -e /etc/security/passwd ]
+then
+    sed "s/^$oldname:/$newname:/" /etc/security/passwd > /etc/security/passwd.tmp.$$
+    mv /etc/security/passwd.tmp.$$ /etc/security/passwd
+fi
