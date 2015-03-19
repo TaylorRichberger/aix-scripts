@@ -138,9 +138,11 @@ echo Moving user
 if [ "$home" = 'keep' ]
 then
     usermod -l "$newname" "$oldname"
+    chown -R "$newname" "$oldhome"
 elif [ "$home" = 'move' ]
 then
     usermod -l "$newname" -d "$newhome" -m "$oldname"
+    chown -R "$newname" "$newhome"
 elif [ "$home" = 'copy' ]
 then
     HardCopy "$oldhome" "$newhome"
