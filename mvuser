@@ -14,6 +14,7 @@ Usage() {
 USAGE
 }
 
+# Create backup of all files given as arguments
 MakeBackup() {
     for file
     do
@@ -24,6 +25,7 @@ MakeBackup() {
     done
 }
 
+# Basically cp -vrl
 HardCopy() {
     if [ $# -ne 2 ]
     then
@@ -34,7 +36,7 @@ HardCopy() {
     then
         echo "Creating directory $2"
         mkdir "$2"
-        ls -1 "$1" | while read file
+        ls -A1 "$1" | while read file
         do
             HardCopy "$1/$file" "$2/$file"
         done
@@ -129,8 +131,10 @@ fi
 printf 'Press anything if this is okay.  Press Ctrl-C to cancel.'
 read d
 
+echo Backing up files
 MakeBackup /etc/group /etc/shadow /etc/passwd /etc/security/lastlog /etc/security/limits /etc/security/user /etc/security/passwd /etc/sudoers
 
+echo Moving user
 if [ "$home" = 'keep' ]
 then
     usermod -l "$newname" "$oldname"
@@ -141,10 +145,11 @@ elif [ "$home" = 'copy' ]
 then
     HardCopy "$oldhome" "$newhome"
     usermod -l "$newname" -d "$newhome" "$oldname"
+    chown -R "$newname" "$newhome"
 fi
 
-if [ -e /etc/security/passwd ]
+if [ "$movepass" -eq 1 -a -e /etc/security/passwd ]
 then
-    sed "s/^$oldname:/$newname:/" /etc/security/passwd > /etc/security/passwd.tmp.$$
-    mv /etc/security/passwd.tmp.$$ /etc/security/passwd
+    echo Moving password with chpasswd
+    echo "$newname:$(/usr/bin/grep -Ep "^$oldname:" /etc/security/passwd | grep 'password = ' | sed 's/^[[:space:]]*password[[:space:]]*=[[:space:]]*//')" | chpasswd -ec
 fi
