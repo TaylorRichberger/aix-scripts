@@ -4,17 +4,29 @@ use strict;
 
 use Time::Local;
 use Mail::SendEasy;
-use Getopt::Std;
+use Getopt::Long;
 
 sub main;
 sub usage;
+
+Getopt::Long::Configure(qw{bundling no_auto_abbrev no_ignore_case_always});
 
 main();
 
 sub main
 {
     my %opts;
-    if (!getopts("a:c:f:hr:s:", \%opts))
+    $opts{d} = [];
+
+    #if (!getopts("a:c:f:hr:s:", \%opts))
+    if (!GetOptions('a|address|to=s' => \$opts{a},
+                    'c|cc=s' => \$opts{c},
+                    'f|from=s' => \$opts{f},
+                    'r|reply-to=s' => \$opts{r},
+                    'h|help' => \$opts{h},
+                    's|smtp=s' => \$opts{s},
+                    # Array ref
+                    'd|data|file=s' => $opts{d}))
     {
         Usage();
         exit(1);
@@ -50,29 +62,34 @@ sub main
         msg      => $output);
 
 
-    if (exists($opts{a}))
+    if (defined($opts{a}))
     {
         $hash{to} = $opts{a};
     }
 
-    if (exists($opts{c}))
+    if (defined($opts{c}) > 0)
     {
         $hash{cc} = $opts{c};
     }
 
-    if (exists($opts{f}))
+    if (defined($opts{f}) > 0)
     {
         $hash{from} = $opts{f};
     }
 
-    if (exists($opts{r}))
+    if (defined($opts{r}) > 0)
     {
         $hash{reply} = $opts{r};
     }
 
+    if (defined(@{$opts{d}}) > 0)
+    {
+        $hash{anex} = $opts{d};
+    }
+
     my $mail;
 
-    if (exists($opts{s}))
+    if (defined($opts{s}) > 0)
     {
         $mail = new Mail::SendEasy(smtp => $opts{s});
     } else
@@ -94,11 +111,12 @@ sub Usage()
     print qq|$0 {options} {command} {subject}
     Mail out the output from {command} to specified addresses with {subject} as the subject
 
-        -a {list}       Use in conjunction with -m.  Replace the default mailer list with the comma-separated one specified as an argument
-        -c {list}       Use in conjunction with -m.  Replace the default cc list with the comma-separated one specified as an argument
-        -f {address}    Use in conjunction with -m.  Replace the default from field with a new one
-        -r {address}    Use in conjunction with -m.  Add a reply-to field.
-        -h              Print this help menu
-        -s {address}    Sets SMTP address if necessary.
+        [-a/--address/--to] {list}      Use in conjunction with -m.  Replace the default mailer list with the comma-separated one specified as an argument
+        [-c/--cc] {list}                Use in conjunction with -m.  Replace the default cc list with the comma-separated one specified as an argument
+        [-f/--from] {address}           Use in conjunction with -m.  Replace the default from field with a new one
+        [-r/--reply-to] {address}       Use in conjunction with -m.  Add a reply-to field.
+        [-h/--help]                     Print this help menu
+        [-s/--smtp] {address}           Sets SMTP address if necessary.
+        [-d/--data/--file] {file}       Sets file to attach.  May be specified multiple times.
 |;
 }
