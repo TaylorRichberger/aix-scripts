@@ -9,6 +9,7 @@ my $isFacs = (-d "/cache");
 sub menu;
 sub cubs_user;
 sub get_users;
+sub get_users_linux;
 sub sel_user;
 sub view_all_users;
 sub acct_detail;
@@ -23,17 +24,20 @@ sub chg_acct_detail_linux;
 sub chg_acct_expire_linux;
 sub fix_acct_linux;
 sub unlock_acct_linux;
+
+# Parse stanzas into a hash of hashes
+sub parsestanzas;
 sub quit;
 
 my $ijs = '';
 # Allow user creation?
 my $allowcreate = 1;
 # default account stuff
-my $pgrp = "clientadmin";
+my $pgrp = "system";
 my $ftpgrp = "cubs";
-my $home = "/home/ftp";
+my $home = "/home";
 my $ftphome = "/home/ftp";
-my $sharedhome = 1;
+my $sharedhome = 0;
 my $OS = $^O;
 
 my %user;
@@ -59,8 +63,8 @@ sub menu {
     # routines are loaded as a list of hashes.  Description is self-explanatory, needsUser routines will only run if a user is selected,
     # routine contains a code reference to a sub or a lambda.  This allows routines to be easily and flexibly added and removed.
     push(@routines, { description => "Select User", needsUser => 0, routine => \&sel_user });
+    push(@routines, { description => "View All Users", needsUser => 0, routine => \&view_all_users });
     push(@routines, { description => "Create admin account", needsUser => 0, routine => \&create_acct });
-    push(@routines, { description => "Create client account", needsUser => 0, routine => \&create_sftp_acct });
     if ($OS eq 'aix')
     {
         push(@routines, { description => "View User Account Details", needsUser => 1, routine => \&acct_detail });
@@ -69,17 +73,17 @@ sub menu {
         push(@routines, { description => "Unlock account without resetting password", needsUser => 1, routine => \&unlock_acct });
     } else
     {
+        push(@routines, { description => "Create client account", needsUser => 0, routine => \&create_sftp_acct });
         push(@routines, { description => "View User Account Details", needsUser => 1, routine => \&acct_detail_linux });
         push(@routines, { description => "Change User Account Details", needsUser => 1, routine => \&chg_acct_detail_linux });
         push(@routines, { description => "Change User Account Password Expiry", needsUser => 1, routine => \&chg_acct_expire_linux });
-        push(@routines, { description => "View All Users", needsUser => 0, routine => \&view_all_users });
         push(@routines, { description => "Reset password and unlock account", needsUser => 1, routine => \&fix_acct_linux });
         push(@routines, { description => "Unlock account without resetting password", needsUser => 1, routine => \&unlock_acct_linux });
     }
     push(@routines, { description => "Remove user account", needsUser => 1, routine => \&rm_acct });
     if (defined($ijs) && (length($ijs) > 0))
     {
-        push(@routines, { description => "Manage CU TCS users", needsUser => 0, routine => \&cubs_user });
+        #push(@routines, { description => "Manage CU TCS users", needsUser => 0, routine => \&cubs_user });
     }
     push(@routines, { description => "Exit\n", needsUser => 0, routine => \&quit });
 
@@ -114,27 +118,90 @@ sub cubs_user {
     system("cd '$ijs'; /uv/bin/uv 'RUN IJS.BP CREATE.USER'");
 }
 
+# AIX get users
 sub get_users {
     my @users;
-    open(my $passwd,"/etc/passwd");
-    my @passwdLines = <$passwd>;
-    close($passwd);
+    my %userrefs;
+
+    my %secpasswd = parsestanzas('/etc/security/passwd');
+    my %secuser = parsestanzas('/etc/security/user');
+
+    setpwent();
+    while (my @pw = getpwent())
+    {
+        my %user;
+        ($user{name}, $user{password}, $user{uid}, $user{gid}, $user{quota}, $user{comment}, $user{gcos}, $user{home}, $user{shell}, $user{expire}) = @pw;
+
+        $user{pgrp} = (getgrgid($user{gid}))[0];
+        $user{groups} = [];
+
+        # We set userrefs so that we can use the grent functions to fill the groups field idiomatically
+        $userrefs{$user{name}} = \%user;
+
+        if (defined($secpasswd{$user{name}}) && defined($secpasswd{$user{name}}{lastupdate}) && ($secpasswd{$user{name}}{lastupdate} =~ m/^\d+$/))
+        {
+            $user{lastchange} = $secpasswd{$user{name}}{lastupdate} / (60 * 60 * 24);
+        } else
+        {
+            $user{lastchange} = '';
+        }
+
+        #$user{maxage} = `sudo lssec -f /etc/security/user -s $user{name} -a maxage`;
+        if (defined($secuser{$user{name}}) && defined($secuser{$user{name}}{maxage}) && ($secuser{$user{name}}{maxage} =~ m/^\d+$/))
+        {
+            $user{maxage} = $secuser{$user{name}}{maxage};
+        } else
+        {
+            $user{maxage} = 0;
+        }
+
+        # Day of password expiration
+        $user{expirationdate} = '';
+        if ($user{maxage} > 0)
+        {
+            # Calculate the day of expiration
+            $user{expirationdate} = (($user{maxage} * 7) + $user{lastchange})
+        }
+
+        $user{reserved} = '';
+        push(@users, \%user);
+    }
+    endpwent();
+
+    setgrent();
+    while (my @gr = getgrent())
+    {
+        for my $member (split(/\s+/, $gr[3]))
+        {
+            unless ($gr[0] eq $userrefs{$member}->{pgrp})
+            {
+                push(@{$userrefs{$member}->{groups}}, $gr[0]);
+            }
+        }
+    }
+    endgrent();
+
+    return @users;
+}
+
+sub get_users_linux {
+    my @users;
+    my %userrefs;
 
     my @shadowLines = split(/\n/, `sudo cat /etc/shadow`);
     chomp(@shadowLines);
 
-    for my $line (@passwdLines)
+    setpwent();
+    while (my @pw = getpwent())
     {
-        chomp($line);
         my %user;
-        ($user{name}, $user{password}, $user{uid}, $user{gid}, $user{comment}, $user{home}, $user{shell}) = split(/:/, $line);
-        $user{pgrp} = `sudo id -g -n $user{name}`;
-        chomp($user{pgrp});
-        my $groups = `sudo id -G -n $user{name}`;
-        chomp($groups);
-        $groups =~ s/$user{pgrp}//;
-        $groups =~ s/^\s+|\s+$//g;
-        @{$user{groups}} = split(/\s+/, $groups);
+        ($user{name}, $user{password}, $user{uid}, $user{gid}, $user{quota}, $user{comment}, $user{gcos}, $user{home}, $user{shell}, $user{expire}) = @pw;
+
+        $user{pgrp} = (getgrgid($user{gid}))[0];
+        $user{groups} = [];
+
+        # We set userrefs so that we can use the grent functions to fill the groups field idiomatically
+        $userrefs{$user{name}} = \%user;
         my $shadow = (grep(/^$user{name}:/, @shadowLines))[0];
         my $dummy;
         if (defined($shadow))
@@ -153,6 +220,19 @@ sub get_users {
         }
         push(@users, \%user);
     }
+    
+    setgrent();
+    while (my @gr = getgrent())
+    {
+        for my $member (split(/\s+/, $gr[3]))
+        {
+            unless ($gr[0] eq $userrefs{$member}->{pgrp})
+            {
+                push(@{$userrefs{$member}->{groups}}, $gr[0]);
+            }
+        }
+    }
+    endgrent();
     return @users;
 }
 
@@ -195,7 +275,15 @@ sub sel_user {
 }
 
 sub view_all_users {
-    my @users = get_users();
+
+    my @users;
+    if ($OS eq 'aix')
+    {
+        @users = get_users();
+    } else
+    {
+        @users = get_users_linux();
+    }
     my @sortoptions = (['name', 'User Name'], ['comment', 'Comment Field'], ['lastchange', 'Last Password Change'], ['expirationdate', 'Days until expiration'], ['uid', 'User ID'], ['pgrp', 'Primary Group'], ['maxage', 'Max Password Age']);
     my $option;
     while ((!defined($option)) or (length($option) == 0) or (($option < 0) or ($option > $#sortoptions)))
@@ -210,6 +298,7 @@ sub view_all_users {
         chomp($option);
     }
     my $sort = @sortoptions[$option]->[0];
+    my $sortdesc = @sortoptions[$option]->[1];
     my @susers = sort {
             if (((!exists($a->{$sort})) or (length($a->{$sort}) == 0)) and ((!exists($b->{$sort})) or (length($b->{$sort}) == 0)))
             {
@@ -231,19 +320,34 @@ sub view_all_users {
                 }
             }
         } @users;
+
+    $option = undef;
+    print("Would you like to reverse the sort? <y/n>: ");
+    $option = <>;
+    chomp($option);
+    if ($option =~ m/^y/i)
+    {
+        @susers = reverse(@susers);
+    }
+
     system("clear");
 
-    printf("%15.15s %25.25s %25.25s %25.25s %15.15s\n", 'Username', 'Comment', 'Last password change', 'Days until expire', 'Max pass age');
-    printf("%15.15s %25.25s %25.25s %25.25s %15.15s\n", '--------', '-------', '--------------------', '-----------------', '------------');
+    printf("%15.15s %25.25s %25.25s\n", 'Username', 'Comment', $sortdesc);
+    printf("%15.15s %25.25s %25.25s\n", '--------', '-------', '-' x length($sortdesc));
+
     # Current date in days since the epoch
     my $date = int(time/86400);
     for my $user (@susers)
     {
-        my $lastchange = ((length($user->{lastchange}) > 0) ? (($date - $user->{lastchange}) . ' days ago') : 'N/A');
-        my $expiration = ((length($user->{expirationdate}) > 0) ? $date - $user->{expirationdate} : 'Never');
-        my $maxage = ((length($user->{maxage}) > 0) ? $user->{maxage} : 'None');
-        printf("%15.15s %25.25s %25.25s %25.25s %15.15s\n", $user->{name}, $user->{comment}, $lastchange, $expiration, $maxage);
+        my %hash = %{$user};
+        $hash{lastchange} = ((length($user->{lastchange}) > 0) ? sprintf('%.2f days ago', $date - $user->{lastchange}) : 'N/A');
+        $hash{expirationdate} = ((length($user->{expirationdate}) > 0) ? sprintf('%.2f', $date - $user->{expirationdate}) : 'Never');
+        $hash{maxage} = ((length($user->{maxage}) > 0) ? $user->{maxage} : 'None');
+        printf("%15.15s %25.25s %25.25s\n", $hash{name}, $hash{comment}, $hash{$sort});
     }
+
+    printf("%15.15s %25.25s %25.25s\n", '--------', '-------', '-' x length($sortdesc));
+    printf("%15.15s %25.25s %25.25s\n", 'Username', 'Comment', $sortdesc);
 
     print "\n\nPress enter to continue";
     my $ret = <>;
@@ -604,6 +708,28 @@ sub rm_acct {
     }
     print "\nPress enter to continue ";
     my $ret = <>;
+}
+
+sub parsestanzas {
+    my $filename = $_[0];
+    my %output;
+    my $stanza = 'default';
+
+    open(my $file, '-|', "sudo cat $filename");
+    while (my $line = <$file>)
+    {
+        chomp($line);
+        if ($line =~ m/^([^\s#\*]+):\s*$/)
+        {
+            $stanza = $1;
+        } elsif ($line =~ m/^\s+(\S+)\s*=\s*(.*)$/)
+        {
+            $output{$stanza}{$1} = $2;
+        }
+    }
+    close($file);
+
+    return %output;
 }
 
 sub quit {
