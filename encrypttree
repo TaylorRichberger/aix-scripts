@@ -3,14 +3,50 @@
 usage()
 {
     cat <<USAGE
-    $0 [options]
+$0 [options]
 
     -c [cipher]     Cipher used.  Defaults to aes-256-cbc
     -d [dest]       Destination directory.  Defaults to /tmp/encrypttree_currentdate.  Will be created if necessary.
     -h              Show this menu.
     -k [keytree]    Key directory.  Defaults to /tmp/encrypttree_keys_currentdate. Will be created if necessary.
     -l [length]     Key length in bytes.  Key is fully random, and not necessarily ASCII.
-    -s [soruce]     Source directory.  Defaults to current directory.
+    -s [source]     Source directory.  Defaults to current directory.
+
+    Encrypts an entire filesystem tree with random keys, storing the encrypted files in identical form in the destination tree,
+    and the randomly generated keys for each file also in identical form in the keytree.
+    
+    Do not specify the same tree for source and dest.  You will wipe the files if you do this, and they will not be encrypted.
+
+    For example, if you have the files source/a, source/b/c, source/b/d, source/b/e/f, and source/b/e/g to make the following tree
+    . source
+    ├── a
+    └── b
+        ├── c
+        └── e
+            ├── f
+            └── g
+
+    and you execute $0 -s source -d dest -k keytree
+
+    It will create the folling directories for dest and keys, respectively:
+
+    . dest
+    ├── a
+    └── b
+        ├── c
+        └── e
+            ├── f
+            └── g
+
+    . keytree
+    ├── a
+    └── b
+        ├── c
+        └── e
+            ├── f
+            └── g
+
+    The cipher will be aes-256-cbc, with 32 byte random raw binary keys.
 USAGE
 }
 
