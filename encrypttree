@@ -109,8 +109,8 @@ checkerror()
 }
 
 CIPHER=aes-256-cbc
-DESTINATION="/tmp/encrypttree_$(date +%F)"
-KEYTREE="/tmp/encrypttree_keys_$(date +%F)"
+DESTINATION="/tmp/encrypttree_$(date +%F-%T)"
+KEYTREE="/tmp/encrypttree_keys_$(date +%F-%T)"
 LENGTH=512
 SOURCE=.
 OPENSSLENCOPT='-e'
@@ -229,8 +229,9 @@ do
 
         if [ "$OPENSSLENCOPT" = '-e' ]
         then
-            dd if=/dev/urandom bs=1 "count=$LENGTH" 2>/dev/null | tr -d '\0' >"$KEYFILE"
+            dd if=/dev/urandom bs=1 "count=$LENGTH" 2>/dev/null | tr -d '\n\r\0' >"$KEYFILE"
             checkerror $?
+            echo >> "$KEYFILE"
         fi
 
         openssl enc -"$CIPHER" "$OPENSSLENCOPT" -salt -in "$file" -out "$DESTFILE" -pass "file:$KEYFILE"
