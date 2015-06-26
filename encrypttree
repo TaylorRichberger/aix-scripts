@@ -27,6 +27,7 @@ $0 [options]
     -r              Decrypt encrypted source into a decrypted destination tree.
                     (r = reverse)
     -s [source]     Source directory.  Defaults to current directory.
+    -t              Wrap files in tar to preserve mode and owner when run as root (experimental)
     -v              Increase verbosity.
 USAGE
 
@@ -118,8 +119,9 @@ FILTER=''
 IGNORE=''
 HELP=''
 VERBOSE='0'
+USETAR='0'
 
-while getopts 'c:d:ef:hi:k:l:rs:v' opt
+while getopts 'c:d:ef:hi:k:l:rs:tv' opt
 do
     case "$opt" in
         c)
@@ -154,6 +156,9 @@ do
             ;;
         v)
             VERBOSE='1'
+            ;;
+        t)
+            USETAR='1'
             ;;
         :)
             echo "Option -$OPTARG requires an argument." >&2
@@ -224,17 +229,26 @@ do
         mkdir -p "$(dirname "$DESTFILE")"
         checkerror $?
 
-        mkdir -p "$(dirname "$KEYFILE")"
-        checkerror $?
-
         if [ "$OPENSSLENCOPT" = '-e' ]
         then
+            mkdir -p "$(dirname "$KEYFILE")"
+            checkerror $?
+
             dd if=/dev/urandom bs=1 "count=$LENGTH" 2>/dev/null | tr -d '\n\r\0' >"$KEYFILE"
             checkerror $?
             echo >> "$KEYFILE"
         fi
-
-        openssl enc -"$CIPHER" "$OPENSSLENCOPT" -salt -in "$file" -out "$DESTFILE" -pass "file:$KEYFILE"
+        if [ "$USETAR" -eq 1 ]
+        then
+            if [ "$OPENSSLENCOPT" = '-e' ]
+            then
+                tar -cf- -C "$SOURCE" "$CUTFILE" | openssl enc -"$CIPHER" "$OPENSSLENCOPT" -salt -out "$DESTFILE" -pass "file:$KEYFILE"
+            else
+                openssl enc -"$CIPHER" "$OPENSSLENCOPT" -salt -in "$file" -pass "file:$KEYFILE" | tar -xf- -C "$DESTINATION"
+            fi
+        else
+            openssl enc -"$CIPHER" "$OPENSSLENCOPT" -salt -in "$file" -out "$DESTFILE" -pass "file:$KEYFILE"
+        fi
         checkerror $?
     fi
 done
