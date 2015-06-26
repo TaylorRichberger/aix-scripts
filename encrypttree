@@ -182,7 +182,7 @@ AWKSCRIPT='BEGIN { cutlength = length(prefix) + 2; print(substr(line, cutlength)
 echo "PROCESSING FROM $SOURCE TO $DESTINATION WITH KEY TREE $KEYTREE"
 find "$SOURCE" -type f | while read file
 do
-    CUTFILE="$(awk -v "prefix=$SOURCE" -v "line=$file" "$AWKSCRIPT")"
+    CUTFILE="$(awk -v "prefix=$SOURCE" -v "line=$file" "$AWKSCRIPT" </dev/null)"
     checkerror $?
     if [ -z "$CUTFILE" ]
     then
@@ -216,6 +216,11 @@ do
 
     if [ "$FILTERMATCH" -eq 1 -a "$IGNOREMATCH" -eq 0 ]
     then
+        if [ "$VERBOSE" -gt 0 ]
+        then
+            echo "- PROCESSING $file INTO $DESTFILE WITH KEY $KEYFILE"
+        fi
+
         mkdir -p "$(dirname "$DESTFILE")"
         checkerror $?
 
@@ -224,16 +229,11 @@ do
 
         if [ "$OPENSSLENCOPT" = '-e' ]
         then
-            dd if=/dev/urandom "of=$KEYFILE" bs=1 "count=$LENGTH" 2>/dev/null
+            dd if=/dev/urandom bs=1 "count=$LENGTH" 2>/dev/null | tr -d '\0' >"$KEYFILE"
             checkerror $?
         fi
 
         openssl enc -"$CIPHER" "$OPENSSLENCOPT" -salt -in "$file" -out "$DESTFILE" -pass "file:$KEYFILE"
         checkerror $?
-
-        if [ "$VERBOSE" -gt 0 ]
-        then
-            echo "- PROCESSED $file INTO $DESTFILE WITH KEY $KEYFILE"
-        fi
     fi
 done
