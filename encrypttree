@@ -23,7 +23,7 @@ $0 [options]
     -k [keytree]    Key directory.  Defaults to
                     /tmp/encrypttree_keys_currentdate. Will be created if necessary.
     -l [length]     Key length in bytes.  Key is fully random, and not
-                    necessarily ASCII.
+                    necessarily ASCII.  Defaults to 512.
     -r              Decrypt encrypted source into a decrypted destination tree.
                     (r = reverse)
     -s [source]     Source directory.  Defaults to current directory.
@@ -78,7 +78,7 @@ USAGE
                 ├── f
                 └── g
 
-        The cipher will be aes-256-cbc, with 32 byte random raw binary keys.
+        The cipher will be aes-256-cbc, with 256 byte random raw binary keys.
 
         but if you instead execute:
         
@@ -111,7 +111,7 @@ checkerror()
 CIPHER=aes-256-cbc
 DESTINATION="/tmp/encrypttree_$(date +%F)"
 KEYTREE="/tmp/encrypttree_keys_$(date +%F)"
-LENGTH=32
+LENGTH=512
 SOURCE=.
 OPENSSLENCOPT='-e'
 FILTER=''
