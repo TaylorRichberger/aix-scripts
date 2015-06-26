@@ -6,55 +6,104 @@ usage()
 $0 [options]
 
     -c [cipher]     Cipher used.  Defaults to aes-256-cbc
-    -d [dest]       Destination directory.  Defaults to /tmp/encrypttree_currentdate.  Will be created if necessary.
-    -h              Show this menu.
-    -k [keytree]    Key directory.  Defaults to /tmp/encrypttree_keys_currentdate. Will be created if necessary.
-    -l [length]     Key length in bytes.  Key is fully random, and not necessarily ASCII.
+    -d [dest]       Destination directory.  Defaults to
+                    /tmp/encrypttree_currentdate.  Will be created if necessary.
+    -e              Encrypt source into encrypted destination tree. (the
+                    default operation)
+    -f [filter]     Regex (in EXTENDED posix regex form) used to filter files.
+                    Only files matching this regex will be accepted.  Matches all by
+                    default.  Specifying this as a 0-length string results in
+                    the default behavior.
+    -h              Show this menu.  Specify twice to increase verbosity.
+    -i [ignore]     Regex (in EXTENDED posix regex form) used to filter files.
+                    Files matching the filter regex that also match this ignore
+                    regex are not processed.  By default, no files are ignored.
+                    Specifying this as a 0-length string results in the default
+                    behavior.
+    -k [keytree]    Key directory.  Defaults to
+                    /tmp/encrypttree_keys_currentdate. Will be created if necessary.
+    -l [length]     Key length in bytes.  Key is fully random, and not
+                    necessarily ASCII.
+    -r              Decrypt encrypted source into a decrypted destination tree.
+                    (r = reverse)
     -s [source]     Source directory.  Defaults to current directory.
-
-    Encrypts an entire filesystem tree with random keys, storing the encrypted files in identical form in the destination tree,
-    and the randomly generated keys for each file also in identical form in the keytree.
-    
-    Do not specify the same tree for source and dest.  You will wipe the files if you do this, and they will not be encrypted.
-
-    For example, if you have the files source/a, source/b/c, source/b/d, source/b/e/f, and source/b/e/g to make the following tree
-    . source
-    ├── a
-    └── b
-        ├── c
-        └── e
-            ├── f
-            └── g
-
-    and you execute $0 -s source -d dest -k keytree
-
-    It will create the folling directories for dest and keys, respectively:
-
-    . dest
-    ├── a
-    └── b
-        ├── c
-        └── e
-            ├── f
-            └── g
-
-    . keytree
-    ├── a
-    └── b
-        ├── c
-        └── e
-            ├── f
-            └── g
-
-    The cipher will be aes-256-cbc, with 32 byte random raw binary keys.
+    -v              Increase verbosity.
 USAGE
+
+    if [ "$1" -gt 1 ]
+    then
+        cat <<USAGE
+
+        Regexes process files UNDER the specified source tree.  So if you specify
+        the source directory as src, and there is a file src/foo/bar, it will be
+        processed with the filtering and ignore regexes as just foo/bar.
+
+        Encrypts an entire filesystem tree with random keys, storing the encrypted
+        files in identical form in the destination tree, and the randomly generated
+        keys for each file also in identical form in the keytree.
+        
+        Do not specify the same tree for source and dest.  You will wipe the files
+        if you do this, and they will not be encrypted.
+
+        For example, if you have the files source/a, source/b/c, source/b/d,
+        source/b/e/f, and source/b/e/g to make the following tree:
+
+        . source
+        ├── a
+        └── b
+            ├── c
+            └── e
+                ├── f
+                └── g
+
+        and you execute:
+        
+        $0 -s source -d dest -k keytree
+
+        It will create the folling directories for dest and keys, respectively:
+
+        . dest
+        ├── a
+        └── b
+            ├── c
+            └── e
+                ├── f
+                └── g
+
+        . keytree
+        ├── a
+        └── b
+            ├── c
+            └── e
+                ├── f
+                └── g
+
+        The cipher will be aes-256-cbc, with 32 byte random raw binary keys.
+
+        but if you instead execute:
+        
+        $0 -s source -d dest -k keytree -f '^b/e' -i 'f$'
+
+        It will create the folling directories for dest and keys, respectively:
+
+        . dest
+        └── b
+            └── e
+                └── g
+
+        . keytree
+        └── b
+            └── e
+                └── g
+USAGE
+    fi
 }
 
 checkerror()
 {
     if [ $1 -ne 0 ];
     then
-        usage
+        usage 1
         exit 1
     fi
 }
@@ -64,8 +113,13 @@ DESTINATION="/tmp/encrypttree_$(date +%F)"
 KEYTREE="/tmp/encrypttree_keys_$(date +%F)"
 LENGTH=32
 SOURCE=.
+OPENSSLENCOPT='-e'
+FILTER=''
+IGNORE=''
+HELP=''
+VERBOSE='0'
 
-while getopts 'c:d:hk:l:s:' opt
+while getopts 'c:d:ef:hi:k:l:rs:v' opt
 do
     case "$opt" in
         c)
@@ -74,9 +128,17 @@ do
         d)
             DESTINATION="$OPTARG"
             ;;
+        e)
+            OPENSSLENCOPT='-e'
+            ;;
+        f)
+            FILTER="$OPTARG"
+            ;;
         h)
-            usage
-            exit
+            HELP="h$HELP"
+            ;;
+        i)
+            IGNORE="$OPTARG"
             ;;
         k)
             KEYTREE="$OPTARG"
@@ -84,8 +146,14 @@ do
         l)
             LENGTH="$OPTARG"
             ;;
+        r)
+            OPENSSLENCOPT='-d'
+            ;;
         s)
             SOURCE="$OPTARG"
+            ;;
+        v)
+            VERBOSE='1'
             ;;
         :)
             echo "Option -$OPTARG requires an argument." >&2
@@ -98,33 +166,20 @@ do
     esac
 done
 
-echo "CIPHER $CIPHER"
-echo "DESTINATION $DESTINATION"
-echo "KEYTREE $KEYTREE"
-echo "LENGTH $LENGTH"
-echo "SOURCE $SOURCE"
+if [ -n "$HELP" ]
+then
+    if [ "$HELP" = 'h' ]
+    then
+        usage 1
+    else
+        usage 2
+    fi
+    exit
+fi
 
 AWKSCRIPT='BEGIN { cutlength = length(prefix) + 2; print(substr(line, cutlength)); }'
 
-echo "BUILDING DIRECTORY TREE IN $DESTINATION AND $KEYTREE"
-find "$SOURCE" -type d | while read dir
-do
-    CUTDIR="$(awk -v "prefix=$SOURCE" -v "line=$dir" "$AWKSCRIPT")"
-    checkerror $?
-
-    if [ -z "$CUTDIR" ]
-    then
-        continue
-    fi
-
-    mkdir -p "$DESTINATION/$CUTDIR"
-    checkerror $?
-
-    mkdir -p "$KEYTREE/$CUTDIR"
-    checkerror $?
-done
-
-echo "ENCRYPTING FILES FROM $SOURCE TO $DESTINATION WITH KEY TREE $KEYTREE"
+echo "PROCESSING FROM $SOURCE TO $DESTINATION WITH KEY TREE $KEYTREE"
 find "$SOURCE" -type f | while read file
 do
     CUTFILE="$(awk -v "prefix=$SOURCE" -v "line=$file" "$AWKSCRIPT")"
@@ -135,8 +190,50 @@ do
     fi
     DESTFILE="$DESTINATION/$CUTFILE"
     KEYFILE="$KEYTREE/$CUTFILE"
-    dd if=/dev/urandom "of=$KEYFILE" bs=1 "count=$LENGTH" 2>/dev/null
-    checkerror $?
-    openssl enc -"$CIPHER" -salt -in "$file" -out "$DESTFILE" -pass "file:$KEYFILE"
-    checkerror $?
+
+    FILTERMATCH=1
+    IGNOREMATCH=0
+
+    if [ -n "$FILTER" ]
+    then
+        echo "$CUTFILE" | grep -qE "$FILTER"
+
+        if [ "$?" -ne 0 ]
+        then
+            FILTERMATCH=0
+        fi
+    fi
+
+    if [ -n "$IGNORE" ]
+    then
+        echo "$CUTFILE" | grep -qE "$IGNORE"
+
+        if [ "$?" -eq 0 ]
+        then
+            IGNOREMATCH=1
+        fi
+    fi
+
+    if [ "$FILTERMATCH" -eq 1 -a "$IGNOREMATCH" -eq 0 ]
+    then
+        mkdir -p "$(dirname "$DESTFILE")"
+        checkerror $?
+
+        mkdir -p "$(dirname "$KEYFILE")"
+        checkerror $?
+
+        if [ "$OPENSSLENCOPT" = '-e' ]
+        then
+            dd if=/dev/urandom "of=$KEYFILE" bs=1 "count=$LENGTH" 2>/dev/null
+            checkerror $?
+        fi
+
+        openssl enc -"$CIPHER" "$OPENSSLENCOPT" -salt -in "$file" -out "$DESTFILE" -pass "file:$KEYFILE"
+        checkerror $?
+
+        if [ "$VERBOSE" -gt 0 ]
+        then
+            echo "- PROCESSED $file INTO $DESTFILE WITH KEY $KEYFILE"
+        fi
+    fi
 done
