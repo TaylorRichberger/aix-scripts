@@ -364,17 +364,17 @@ sub acct_detail {
         }
     }
     system("clear");
-    print "username:                 $user{name}\n";
-    print "primary group:            $userdetail{'pgrp'}\n";
-    print "groups:                   $userdetail{'groups'}\n";
-    print "shell:                    $userdetail{'shell'}\n";
-    print "home:                     $userdetail{'home'}\n";
-    print "login:                    $userdetail{'login'}\n";
-    print "account locked:           $userdetail{'account_locked'}\n";
-    print "unsuccessful login count: $userdetail{'unsuccessful_login_count'}\n";
-    print "last successful login:    " . scalar(localtime($userdetail{'time_last_login'})) . "\n";
-    print "last unsuccessful login:  " . scalar(localtime($userdetail{'time_last_unsuccessful_login'})) . "\n";
-    print "Press enter to continue: ";
+    printf("%-40s%s\n", "username:", $user{name});
+    printf("%-40s%s\n", "primary group:", $userdetail{'pgrp'});
+    printf("%-40s%s\n", "groups:", $userdetail{'groups'});
+    printf("%-40s%s\n", "shell:", $userdetail{'shell'});
+    printf("%-40s%s\n", "home:", $userdetail{'home'});
+    printf("%-40s%s\n", "login:", $userdetail{'login'});
+    printf("%-40s%s\n", "account locked:", $userdetail{'account_locked'});
+    printf("%-40s%s\n", "unsuccessful login count:", defined($userdetail{'unsuccessful_login_count'}) ? $userdetail{'unsuccessful_login_count'} : 0);
+    printf("%-40s%s\n", "last successful login:", localtime($userdetail{'time_last_login'}));
+    printf("%-40s%s\n", "last unsuccessful login:", localtime($userdetail{'time_lastunsuccessful_login'}));
+    printf("Press enter to continue: ");
     my $input = <>;
 }
 
@@ -404,7 +404,7 @@ sub chg_acct_detail {
     my %userdetail;
 
     foreach my $user (@lsuser) {
-        chomp;
+        chomp($user);
         my @el = split(/=/,$user);
         if ($#el > 0) {
             $userdetail{$el[0]} = $el[1];
