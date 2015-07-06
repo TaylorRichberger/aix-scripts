@@ -178,7 +178,7 @@ sub Touch
     close($fh);
 
     system("scp $remotescriptname $host:$remotescriptname");
-    system("ssh $host 'sudo perl $remotescriptname && rm $remotescriptname'");
+    system("ssh -t $host 'sudo perl $remotescriptname && rm $remotescriptname'");
     unlink($remotescriptname);
 }
 
