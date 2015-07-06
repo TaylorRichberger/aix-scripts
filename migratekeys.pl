@@ -157,7 +157,6 @@ for my $user (@users)
     {
         mkdir($sshdir);
         chown($uid, $gid, $sshdir);
-        print(`su $username -c "ssh-keygen -t rsa -N '' -f $sshdir/id_rsa"`);
     }
 
     my $authkeysfile = "$dir/.ssh/authorized_keys";
