@@ -87,7 +87,7 @@ sub Main
         {
             mkdir("$user->{dir}/.ssh");
             chown($user->{uid}, $user->{gid}, "$user->{dir}/.ssh");
-            print(`su $user->{name} -c "ssh-keygen -t rsa -N '' -f $user->{dir}/.ssh/id_rsa"`);
+            system("su $user->{name} -c \"ssh-keygen -t rsa -N '' -f $user->{dir}/.ssh/id_rsa\"");
         }
         open(my $pubkey, '<', "$user->{dir}/.ssh/id_rsa.pub") or die "could not open $user->{name}'s pubkey: $!";
 
@@ -127,6 +127,8 @@ sub Main
     print($fh q^
 umask(0700);
 
+my $action = $ARGV[0];
+
 for my $user (@users)
 {
     my $username = $user->[0];
@@ -134,40 +136,56 @@ for my $user (@users)
     my $pubkey = $user->[2];
 
     # Create the group if it doesn't exist
+    setgrent();
     my @gr = getgrnam($group);
     if (!@gr)
     {
-        print(`groupadd $group`);
+        system("groupadd $group");
     }
+    endgrent();
 
+    setpwent();
     my @pw = getpwnam($username);
     if (!@pw)
     {
-        print(`useradd -g $group -m $username`);
-        @pw = getpwnam($username) || die "Could not create user: $!";
+        print("creating user $username\n");
+        system("useradd -g $group -m $username");
     }
+    endpwent();
 
-    my $uid = $pw[2];
-    my $gid = $pw[3];
-    my $dir = $pw[7];
-
-    my $sshdir = "$dir/.ssh";
-
-    if (! -e "$sshdir/id_rsa.pub")
+    if ($action ne 'check')
     {
-        mkdir($sshdir);
-        chown($uid, $gid, $sshdir);
+        my $uid = $pw[2];
+        my $gid = $pw[3];
+        my $dir = $pw[7];
+        print("user $username, uid $uid, gid $gid, home $dir\n");
+
+        if (defined($uid) && defined($gid) && defined($dir))
+        {
+            my $sshdir = "$dir/.ssh";
+
+            if (! -e "$sshdir/id_rsa.pub")
+            {
+                print("Making ssh dir at $sshdir\n");
+                mkdir($sshdir);
+                chown($uid, $gid, $sshdir);
+            }
+
+            my $authkeysfile = "$dir/.ssh/authorized_keys";
+
+            print("Creating auth keys file at $authkeysfile\n");
+            Touch($authkeysfile);
+            chown($uid, $gid, $dir, $sshdir, $authkeysfile);
+            chmod(0700, $dir, $sshdir, $authkeysfile);
+
+            open(my $fh, '>>', $authkeysfile) || die "Could not write to authkeys file: $!";
+            print($fh "$pubkey\n");
+            close($fh);
+        } else
+        {
+            print("$username HAS UNDEFINED ATTRIBUTES!  SKIPPING SSH KEY SHIPPING!\n");
+        }
     }
-
-    my $authkeysfile = "$dir/.ssh/authorized_keys";
-
-    Touch($authkeysfile);
-    chown($uid, $gid, $dir, $sshdir, $authkeysfile);
-    chmod(0700, $dir, $sshdir, $authkeysfile);
-
-    open(my $fh, '>>', $authkeysfile) || die "Could not write to authkeys file: $!";
-    print($fh "$pubkey\n");
-    close($fh);
 }
 
 sub Touch
@@ -180,7 +198,8 @@ sub Touch
     close($fh);
 
     system("scp $remotescriptname $host:$remotescriptname");
-    system("ssh -t $host 'sudo perl $remotescriptname && rm $remotescriptname'");
+    # Must run script twice to allow user to be created and then queried
+    system("ssh -t $host 'sudo perl $remotescriptname check && sudo perl $remotescriptname && rm $remotescriptname'");
     unlink($remotescriptname);
 }
 
