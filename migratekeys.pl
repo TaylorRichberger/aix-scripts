@@ -147,14 +147,17 @@ for my $user (@users)
         @pw = getpwnam($username) || die "Could not create user: $!";
     }
 
-    my ($name, $passwd, $uid, $gid, $quota, $comment, $gcos, $dir, $shell, $expire) = @pw;
+    my $uid = $pw[2];
+    my $gid = $pw[3];
+    my $dir = $pw[7];
+
     my $sshdir = "$dir/.ssh";
 
     if (! -e "$sshdir/id_rsa.pub")
     {
         mkdir($sshdir);
         chown($uid, $gid, $sshdir);
-        print(`su $name -c "ssh-keygen -t rsa -N '' -f $sshdir/id_rsa"`);
+        print(`su $username -c "ssh-keygen -t rsa -N '' -f $sshdir/id_rsa"`);
     }
 
     my $authkeysfile = "$dir/.ssh/authorized_keys";
