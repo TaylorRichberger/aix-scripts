@@ -1,4 +1,18 @@
 #!/usr/bin/perl
+# Copyright © 2015 Taylor C. Richberger <taywee@gmx.com>
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 use warnings;
 use strict;
 
@@ -85,6 +99,8 @@ sub Main
     {
         if (! -e "$user->{dir}/.ssh/id_rsa.pub")
         {
+            mkdir("$user->{dir}");
+            chown($user->{uid}, $user->{gid}, "$user->{dir}");
             mkdir("$user->{dir}/.ssh");
             chown($user->{uid}, $user->{gid}, "$user->{dir}/.ssh");
             system("su $user->{name} -c \"ssh-keygen -t rsa -N '' -f $user->{dir}/.ssh/id_rsa\"");
@@ -167,6 +183,8 @@ for my $user (@users)
             if (! -e "$sshdir/id_rsa.pub")
             {
                 print("Making ssh dir at $sshdir\n");
+                mkdir($dir);
+                chown($uid, $gid, $dir);
                 mkdir($sshdir);
                 chown($uid, $gid, $sshdir);
             }
@@ -204,6 +222,8 @@ sub Touch
 }
 
 =pod
+
+=encoding utf-8
 
 =head1 NAME
 
@@ -255,3 +275,18 @@ if they do not exist, creates their ssh keys if they do not exist, creates
 their authorized_keys file if it does not exist with the proper permissions,
 and then appends the local host's keys to their file.
 
+=head1 LICENSE
+
+Copyright © 2015 Taylor C. Richberger <taywee@gmx.com>
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
