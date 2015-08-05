@@ -1,0 +1,46 @@
+#!/bin/sh
+
+if [ $# -lt 2 ]; then
+    echo 'need to input at least one pattern and a list of addresses' >&2
+    exit 1
+fi
+
+addresses="$1"
+
+matches="$2"
+
+shift 2
+
+for match in $*; do
+    matches="$matches
+$match"
+done
+
+umask 0077
+
+cat /var/log/messages-* /var/log/messages | grep -F -e "$matches" | gzip -c - > /tmp/messages.gz
+
+v_mailpart="$(uuidgen)/$(hostname)"
+
+/usr/sbin/sendmail -t <<HERE
+To: $addresses
+Subject: test message scrape $(echo $matches): $(date)
+Content-Type: multipart/mixed; boundary="$v_mailpart"
+MIME-Version: 1.0
+
+--$v_mailpart
+Content-Type: text/plain
+Content-Disposition: inline
+
+This is a test message
+
+--$v_mailpart
+Content-Transfer-Encoding: base64
+Content-Type: application/octet-stream; name=messages.gz
+Content-Disposition: attachment; filename=messages.gz
+
+$(base64 /tmp/messages.gz)
+ --$v_mailpart--
+HERE
+
+exit 0
