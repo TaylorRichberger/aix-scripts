@@ -24,7 +24,7 @@ v_mailpart="$(uuidgen)/$(hostname)"
 
 /usr/sbin/sendmail -t <<HERE
 To: $addresses
-Subject: test message scrape $(echo $matches): $(date)
+Subject: $(hostname) message scrape $(echo $matches): $(date)
 Content-Type: multipart/mixed; boundary="$v_mailpart"
 MIME-Version: 1.0
 
@@ -32,7 +32,10 @@ MIME-Version: 1.0
 Content-Type: text/plain
 Content-Disposition: inline
 
-This is a test message
+$(date)
+
+This is a scrape of messages matching the pattern set '$(echo $matches)' on
+$(hostname)
 
 --$v_mailpart
 Content-Transfer-Encoding: base64
