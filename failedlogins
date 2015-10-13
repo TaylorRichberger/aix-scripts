@@ -1,0 +1,62 @@
+#!/bin/sh
+
+usage()
+{
+    cat<<USAGE
+    options are:
+        -h          show this help menu
+        -l          list all users with a failed login count of at least 1
+        -r [user]   reset [user] failed login count and unlocks them.  ALL will unlock all users
+        -s          only show your own failed login count
+USAGE
+}
+
+list()
+{
+    lsuser -R LDAP -a unsuccessful_login_count ALL 2>/dev/null | grep -vE '=0$'
+}
+
+reset()
+{
+    if [ "x$1" = xALL ]; then
+        for user in $(lsuser -R LDAP -a unsuccessful_login_count ALL 2>/dev/null | grep -vE '=0$' | awk '{ print $1 }'); do
+            sudo chsec -f /etc/security/lastlog -a 'unsuccessful_login_count=0' -s "$user"
+            sudo chuser 'account_locked=false' "$user"
+        done
+    else
+        sudo chsec -f /etc/security/lastlog -a 'unsuccessful_login_count=0' -s "$1"
+        sudo chuser 'account_locked=false' "$1"
+    fi
+}
+
+show()
+{
+    lsuser -a unsuccessful_login_count "$1" 2>/dev/null || lsuser -R LDAP -a unsuccessful_login_count "$1" 2>/dev/null
+}
+
+if [ $# -lt 1 ]; then
+    usage
+    exit 1
+fi
+
+while getopts 'hlr:s:' opt; do
+    case "$opt" in
+        h)
+            usage
+            exit 0
+            ;;
+        l)
+            list
+            ;;
+        r)
+            reset "$OPTARG"
+            ;;
+        s)
+            show "$OPTARG"
+            ;;
+        *)
+            usage
+            exit 1
+            ;;
+    esac
+done
