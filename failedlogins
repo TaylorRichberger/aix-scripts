@@ -14,18 +14,33 @@ USAGE
 list()
 {
     lsuser -R LDAP -a unsuccessful_login_count ALL 2>/dev/null | grep -vE '=0$'
+    lsuser -a unsuccessful_login_count ALL 2>/dev/null | grep -vE '=0$'
 }
 
 reset()
 {
     if [ "x$1" = xALL ]; then
         for user in $(lsuser -R LDAP -a unsuccessful_login_count ALL 2>/dev/null | grep -vE '=0$' | awk '{ print $1 }'); do
-            sudo chsec -f /etc/security/lastlog -a 'unsuccessful_login_count=0' -s "$user"
-            sudo chuser 'account_locked=false' "$user"
+            echo "resetting login count for $user"
+            sudo chsec -f /etc/security/lastlog -a 'unsuccessful_login_count=0' -s "$user" 2>/dev/null
+        done
+        for user in $(lsuser -R LDAP -a account_locked ALL 2>/dev/null | grep 'true' | awk '{ print $1 }'); do
+            echo "unlocking $user"
+            sudo chuser 'account_locked=false' "$user" 2>/dev/null
+        done
+        for user in $(lsuser -a unsuccessful_login_count ALL 2>/dev/null | grep -vE '=0$' | awk '{ print $1 }'); do
+            echo "resetting login count for $user"
+            sudo chsec -f /etc/security/lastlog -a 'unsuccessful_login_count=0' -s "$user" 2>/dev/null
+        done
+        for user in $(lsuser -a account_locked ALL 2>/dev/null | grep 'true' | awk '{ print $1 }'); do
+            echo "unlocking $user"
+            sudo chuser 'account_locked=false' "$user" 2>/dev/null
         done
     else
-        sudo chsec -f /etc/security/lastlog -a 'unsuccessful_login_count=0' -s "$1"
-        sudo chuser 'account_locked=false' "$1"
+        echo "resetting login count for $1"
+        sudo chsec -f /etc/security/lastlog -a 'unsuccessful_login_count=0' -s "$1" 2>/dev/null
+        echo "unlocking $1"
+        sudo chuser 'account_locked=false' "$1" 2>/dev/null
     fi
 }
 
