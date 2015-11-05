@@ -107,47 +107,47 @@ int main()
                 json_object *psobj = json_object_new_object();
                 json_object *lwpobj = json_object_new_object();
 
-                json_object_object_add(psobj, "lwp", lwpobj);
+                json_object_object_add(psobj, "lwp", lwpobj); /* "representative" thread info */
                 json_object_array_add(proclist, psobj);
+                
+                json_object_object_add(psobj, "flag", json_object_new_int(info.pr_flag));               // process flags from proc struct p_flag
+                json_object_object_add(psobj, "flag2", json_object_new_int(info.pr_flag2));             // process flags from proc struct p_flag2
+                json_object_object_add(psobj, "nlwp", json_object_new_int(info.pr_nlwp));               // number of threads in process
+                json_object_object_add(psobj, "uid", json_object_new_int64(info.pr_uid));               // real user id
+                json_object_object_add(psobj, "euid", json_object_new_int64(info.pr_euid));             // effective user id
+                json_object_object_add(psobj, "gid", json_object_new_int64(info.pr_gid));               // real group id
+                json_object_object_add(psobj, "egid", json_object_new_int64(info.pr_egid));             // effective group id
+                json_object_object_add(psobj, "pid", json_object_new_int64(info.pr_pid));               // unique process id
+                json_object_object_add(psobj, "ppid", json_object_new_int64(info.pr_ppid));             // process id of parent
+                json_object_object_add(psobj, "pgid", json_object_new_int64(info.pr_pgid));             // pid of process group leader
+                json_object_object_add(psobj, "sid", json_object_new_int64(info.pr_sid));               // session id
+                json_object_object_add(psobj, "ttydev", json_object_new_int64(info.pr_ttydev));         // controlling tty device
+                json_object_object_add(psobj, "addr", json_object_new_int64(info.pr_addr));             // internal address of proc struct
+                json_object_object_add(psobj, "size", json_object_new_int64(info.pr_size));             // process image size in KB (1024) units
+                json_object_object_add(psobj, "rssize", json_object_new_int64(info.pr_rssize));         // resident set size in KB (1024) units
+                json_object_object_add(psobj, "start", json_object_new_int64(info.pr_start.tv_sec));    // process start time, time since epoch
+                json_object_object_add(psobj, "time", json_object_new_int64(info.pr_time.tv_sec));      // usr+sys cpu time for this process
+                json_object_object_add(psobj, "cid", json_object_new_int(info.pr_cid));                 // corral id
+                json_object_object_add(psobj, "argc", json_object_new_int(info.pr_argc));               // initial argument count
+                json_object_object_add(psobj, "argv", json_object_new_int64(info.pr_argv));             // address of initial argument vector in user process
+                json_object_object_add(psobj, "envp", json_object_new_int64(info.pr_envp));             // address of initial environment vector in user process
+                json_object_object_add(psobj, "fname", json_object_new_string(info.pr_fname));          // last component of exec()ed pathname*/
+                json_object_object_add(psobj, "psargs", json_object_new_string(info.pr_psargs));        // initial characters of arg list
 
-                json_object_object_add(psobj, "flag", json_object_new_int(info.pr_flag));
-                json_object_object_add(psobj, "flag2", json_object_new_int(info.pr_flag2));
-                json_object_object_add(psobj, "nlwp", json_object_new_int(info.pr_nlwp));
-                json_object_object_add(psobj, "uid", json_object_new_int64(info.pr_uid));
-                json_object_object_add(psobj, "euid", json_object_new_int64(info.pr_euid));
-                json_object_object_add(psobj, "gid", json_object_new_int64(info.pr_gid));
-                json_object_object_add(psobj, "egid", json_object_new_int64(info.pr_egid));
-                json_object_object_add(psobj, "pid", json_object_new_int64(info.pr_pid));
-                json_object_object_add(psobj, "ppid", json_object_new_int64(info.pr_ppid));
-                json_object_object_add(psobj, "pgid", json_object_new_int64(info.pr_pgid));
-                json_object_object_add(psobj, "sid", json_object_new_int64(info.pr_sid));
-                json_object_object_add(psobj, "ttydev", json_object_new_int64(info.pr_ttydev));
-                json_object_object_add(psobj, "addr", json_object_new_int64(info.pr_addr));
-                json_object_object_add(psobj, "size", json_object_new_int64(info.pr_size));
-                json_object_object_add(psobj, "rssize", json_object_new_int64(info.pr_rssize));
-                json_object_object_add(psobj, "start", json_object_new_int64(info.pr_start.tv_sec));
-                json_object_object_add(psobj, "time", json_object_new_int64(info.pr_time.tv_sec));
-                json_object_object_add(psobj, "cid", json_object_new_int(info.pr_cid));
-                json_object_object_add(psobj, "argc", json_object_new_int(info.pr_argc));
-                json_object_object_add(psobj, "argv", json_object_new_int64(info.pr_argv));
-                json_object_object_add(psobj, "envp", json_object_new_int64(info.pr_envp));
-                json_object_object_add(psobj, "fname", json_object_new_string(info.pr_fname));
-                json_object_object_add(psobj, "psargs", json_object_new_string(info.pr_psargs));
-
-                json_object_object_add(lwpobj, "lwpid", json_object_new_int64(info.pr_lwp.pr_lwpid));
-                json_object_object_add(lwpobj, "addr", json_object_new_int64(info.pr_lwp.pr_addr));
-                json_object_object_add(lwpobj, "wchan", json_object_new_int64(info.pr_lwp.pr_wchan));
-                json_object_object_add(lwpobj, "flag", json_object_new_int(info.pr_lwp.pr_flag));
-                json_object_object_add(lwpobj, "wtype", json_object_new_int(info.pr_lwp.pr_wtype));
-                json_object_object_add(lwpobj, "state", json_object_new_int(info.pr_lwp.pr_state));
-                json_object_object_add(lwpobj, "sname", json_object_new_string_len(&info.pr_lwp.pr_sname, 1)); // Single character
-                json_object_object_add(lwpobj, "nice", json_object_new_int(info.pr_lwp.pr_nice));
-                json_object_object_add(lwpobj, "pri", json_object_new_int(info.pr_lwp.pr_pri));
-                json_object_object_add(lwpobj, "policy", json_object_new_int(info.pr_lwp.pr_policy));
-                json_object_object_add(lwpobj, "clname", json_object_new_string(info.pr_lwp.pr_clname));
-                json_object_object_add(lwpobj, "onpro", json_object_new_int(info.pr_lwp.pr_onpro));
-                json_object_object_add(lwpobj, "bindpro", json_object_new_int(info.pr_lwp.pr_bindpro));
-                json_object_object_add(lwpobj, "ptid", json_object_new_int(info.pr_lwp.pr_ptid));
+                json_object_object_add(lwpobj, "lwpid", json_object_new_int64(info.pr_lwp.pr_lwpid));           // thread id
+                json_object_object_add(lwpobj, "addr", json_object_new_int64(info.pr_lwp.pr_addr));             // internal address of thread
+                json_object_object_add(lwpobj, "wchan", json_object_new_int64(info.pr_lwp.pr_wchan));           // wait addr for sleeping thread
+                json_object_object_add(lwpobj, "flag", json_object_new_int(info.pr_lwp.pr_flag));               // thread flags
+                json_object_object_add(lwpobj, "wtype", json_object_new_int(info.pr_lwp.pr_wtype));             // type of thread wait
+                json_object_object_add(lwpobj, "state", json_object_new_int(info.pr_lwp.pr_state));             // thread state
+                json_object_object_add(lwpobj, "sname", json_object_new_string_len(&info.pr_lwp.pr_sname, 1));  // printable thread state character
+                json_object_object_add(lwpobj, "nice", json_object_new_int(info.pr_lwp.pr_nice));               // nice for cpu usage
+                json_object_object_add(lwpobj, "pri", json_object_new_int(info.pr_lwp.pr_pri));                 // priority, high value = high priority*/
+                json_object_object_add(lwpobj, "policy", json_object_new_int(info.pr_lwp.pr_policy));           // scheduling policy */ 
+                json_object_object_add(lwpobj, "clname", json_object_new_string(info.pr_lwp.pr_clname));        // printable scheduling policy string
+                json_object_object_add(lwpobj, "onpro", json_object_new_int(info.pr_lwp.pr_onpro));             // processor on which thread last ran
+                json_object_object_add(lwpobj, "bindpro", json_object_new_int(info.pr_lwp.pr_bindpro));         // processor to which thread is bound
+                json_object_object_add(lwpobj, "ptid", json_object_new_int(info.pr_lwp.pr_ptid));               // pthread id
                 fclose(file);
             }
         }
