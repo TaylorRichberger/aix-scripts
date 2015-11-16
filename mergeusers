@@ -1,0 +1,118 @@
+#!/usr/bin/perl
+use warnings;
+use strict;
+
+use Getopt::Std;
+use Pod::Usage;
+use Time::Local;
+
+sub main;
+sub pluralize($;$);
+
+exit main();
+
+sub main
+{
+    my %opts;
+
+    if (not getopts('hp:g:s:P:G:S:', \%opts))
+    {
+        pod2usage({-verbose => 1, -exitval => 1, -output => \*STDERR});
+    }
+
+    if ($opts{h})
+    {
+        pod2usage({-verbose => 2, -exitval => 0, -output => \*STDOUT});
+    }
+
+    # These options are mandatory
+    for my $opt (qw(p g s P G S))
+    {
+        if (not defined($opts{$opt}))
+        {
+            pod2usage({-verbose => 1, -exitval => 2, -output => \*STDOUT});
+        }
+    }
+
+    return 0;
+}
+
+sub pluralize($;$)
+{
+    my ($word, $count) = @_;
+    if (defined($count) and $count == 1)
+    {
+        return $word;
+    } else
+    {
+        return $word . 's';
+    }
+}
+
+=pod
+
+=encoding utf-8
+
+=head1 NAME
+
+mergeusers
+
+=head1 SYNOPSIS
+
+mergeusers {B<options>}
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<-h>
+
+Show the help text.
+
+=item B<-p> I<passwd>
+
+The destination host's /etc/passwd file.
+
+=item B<-g> I<group>
+
+The destination host's /etc/group file
+
+=item B<-s> I<shadow>
+
+The destination host's /etc/security/passwd file
+
+=item B<-P> I<passwd>
+
+The source host's /etc/passwd file.
+
+=item B<-G> I<group>
+
+The source host's /etc/group file
+
+=item B<-S> I<shadow>
+
+The source host's /etc/security/passwd file
+
+=back
+
+=head1 DESCRIPTION
+
+This simply merges the source host's users into the current host's users,
+outputting the files into the CWD (/etc/security/passwd is output as `shadow`).
+
+This attempts to preserve UIDs.  It skips usernames that already exist in the
+destination.  If a UID is used by a user in the destination that is not the
+same name as the source user, an error is thrown.
+
+This will only work on AIX systems, unless you can find another system that
+uses /etc/security/passwd as the shadow file in the same stanza format as
+AIX's.
+
+=head1 LICENSE
+
+Written by Taylor C. Richberger <taywee@gmx.com>
+
+Copyright © 2015 Absolute Performance Inc <csteam@absolute-performance.com>.
+All rights reserved.
+This is proprietary software.
+No warranty, explicit or implicit, provided.
