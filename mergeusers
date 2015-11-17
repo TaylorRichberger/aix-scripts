@@ -2,12 +2,83 @@
 use warnings;
 use strict;
 
+use Data::Dumper;
 use Getopt::Std;
 use Pod::Usage;
-use Time::Local;
 
 sub main;
+
+# pluralize($word{, $count})
+# 
+# Pluralize a word.
+# 
+# $word: word the word to pluralize
+# $count: count to be used to pluralize (ie. 1 == singular, all other == plural)
+# return: The pluralized string
 sub pluralize($;$);
+
+# readpasswd($path)
+#
+# Read in specified passwd file into an array of hashes, which is returned by
+# reference
+#
+# Hash keys: name, password, uid, pgrp, gecos, dir, shell
+#
+# $path: path to the file
+# return: [\%userhash, ...]
+sub readpasswd($);
+
+# readgroup($path)
+#
+# Read in specified group file into an array of hashes, which is returned by
+# reference.  The "members" item is an array reference, pointing to an array of
+# users.
+# Hash keys: name, password, gid, members
+# 
+# $path: path to the file
+# return: [\%grouphash, ...]
+sub readgroup($);
+
+# readstanzas($path)
+#
+# Read in specified stanza-formatted file into a hash, which is returned by
+# reference.  Each hash key is a stanza name, with the value being a reference
+# to another hash.  The hash keys align to the attribute keys literally.
+#
+# $path: path to the file
+# return: {stanza => {attrib => value, ...}, ...}
+sub readstanzas($);
+
+# getusers($passwd, $group, $shadow)
+#
+# Get users and groups.
+#
+# All referenced groups in the user hash are by name, not gid.
+#
+# userhash has fields name, password (the passwd file password), shadow (the shadow attributes), pgrp, groups, gecos, dir, shell.
+#
+# $passwd: path to passwd file
+# $group: path to group file
+# $shadow: path to shadow file (/etc/security/passwd)
+# return: ({username => \%user, ...}, {groupname => gid, ...})
+sub getusers($$$);
+
+# mergeusers(\%destusers, \%destgroups, \%sourceusers, \%sourcegroups)
+#
+# Take source users and groups, and use them to merge into the destusers and destgroups
+#
+# They take the hashes as returned from getusers
+#
+# \%destusers: users hash returned from getusers. is modified
+# \%destgroups: groups hash returned from getusers. is modified
+# \%sourceusers: users hash returned from getusers
+# \%sourcegroups: groups hash returned from getusers
+sub mergeusers(\%\%\%\%);
+
+sub uniq {
+    my %seen;
+    grep !$seen{$_}++, @_;
+}
 
 exit main();
 
@@ -15,7 +86,7 @@ sub main
 {
     my %opts;
 
-    if (not getopts('hp:g:s:P:G:S:', \%opts))
+    if (not getopts('hg:p:s:G:P:S:', \%opts))
     {
         pod2usage({-verbose => 1, -exitval => 1, -output => \*STDERR});
     }
@@ -26,12 +97,87 @@ sub main
     }
 
     # These options are mandatory
-    for my $opt (qw(p g s P G S))
+    for my $opt (qw(g p s G P S))
     {
         if (not defined($opts{$opt}))
         {
             pod2usage({-verbose => 1, -exitval => 2, -output => \*STDOUT});
         }
+    }
+
+    my ($users, $groups) = getusers($opts{p}, $opts{g}, $opts{s});
+    my ($srcusers, $srcgroups) = getusers($opts{P}, $opts{G}, $opts{S});
+
+    mergeusers(%{$users}, %{$groups}, %{$srcusers}, %{$srcgroups});
+
+    my @userlist;
+    my %groupusers;
+    my @grouplist;
+
+    # Add users to group list and group membership hash
+    while (my ($name, $user) = each(%{$users}))
+    {
+        push(@userlist, $user);
+        my $pgrp = $user->{pgrp};
+        if (not exists($groupusers{$pgrp}))
+        {
+            $groupusers{$pgrp} = [];
+        }
+        push(@{$groupusers{$pgrp}}, $name);
+        for my $group (@{$user->{groups}})
+        {
+            if (not exists($groupusers{$group}))
+            {
+                $groupusers{$group} = [];
+            }
+            push(@{$groupusers{$group}}, $name);
+        }
+    }
+
+    # Add groups to group list
+    while (my ($name, $gid) = each(%{$groups}))
+    {
+        push(@grouplist, {name => $name, gid => $gid, users => $groupusers{$name}});
+    }
+
+    # Sort lists
+    my @sortedusers = sort { $a->{uid} <=> $b->{uid} } @userlist;
+    my @sortedgroups = sort { $a->{gid} <=> $b->{gid} } @grouplist;
+
+    open(my $newpasswd, '>', 'passwd.new');
+    open(my $newgroup, '>', 'group.new');
+    open(my $newshadow, '>', 'shadow.new');
+
+    for my $user (@sortedusers)
+    {
+        my $name = $user->{name};
+        my $password = $user->{password};
+        my $uid = $user->{uid};
+        my $pgrp = $groups->{$user->{pgrp}};
+        my $gecos = $user->{gecos};
+        my $dir = $user->{dir};
+        my $shell = $user->{shell};
+        print($newpasswd "$name:$password:$uid:$pgrp:$gecos:$dir:$shell\n");
+        if (exists($user->{shadow}))
+        {
+            print($newshadow "$name:\n");
+            while (my ($attribute, $value) = each(%{$user->{shadow}}))
+            {
+                print($newshadow "\t$attribute = $value\n");
+            }
+            print($newshadow "\n");
+        }
+    }
+    for my $group (@sortedgroups)
+    {
+        my $name = $group->{name};
+        my $gid = $group->{gid};
+        my $users = '';
+        if (defined($group->{users}))
+        {
+            $users = join(',', uniq(@{$group->{users}}));
+        }
+        print($newgroup "$name:!:$gid:$users\n");
     }
 
     return 0;
@@ -46,6 +192,214 @@ sub pluralize($;$)
     } else
     {
         return $word . 's';
+    }
+}
+
+sub readpasswd($)
+{
+    my ($filename) = @_;
+    if (open(my $file, '<', $filename))
+    {
+        my @output;
+        while (my $line = <$file>)
+        {
+            chomp($line);
+            if (length($line) > 0)
+            {
+                my %entry;
+                ($entry{name}, $entry{password}, $entry{uid}, $entry{pgrp}, $entry{gecos}, $entry{dir}, $entry{shell}) = split(/:/, $line);
+                push(@output, \%entry);
+            }
+        }
+        return \@output;
+    } else
+    {
+        die("could not open $filename");
+    }
+}
+
+sub readgroup($)
+{
+    my ($filename) = @_;
+    if (open(my $file, '<', $filename))
+    {
+        my @output;
+        while (my $line = <$file>)
+        {
+            chomp($line);
+            if (length($line) > 0)
+            {
+                my %entry;
+                my $memberlist;
+                ($entry{name}, $entry{password}, $entry{gid}, $memberlist) = split(/:/, $line);
+                if (length($memberlist) > 0)
+                {
+                    my @members = split(/,/, $memberlist);
+                    $entry{members} = \@members;
+                } else
+                {
+                    $entry{members} = [];
+                }
+                push(@output, \%entry);
+            }
+        }
+        return \@output;
+    } else
+    {
+        die("could not open $filename");
+    }
+}
+
+sub readstanzas($)
+{
+    my ($filename) = @_;
+    if (open(my $file, '<', $filename))
+    {
+        my %output;
+
+        # Hash reference
+        my $entry = undef;
+        my $current = undef;
+        while (my $line = <$file>)
+        {
+            chomp($line);
+            # Skip lines that are comments
+            next if ($line =~ m/^\s*#/);
+            # Skip blank lines (and whitespace lines)
+            next if ($line =~ m/^\s*$/);
+
+            if ($line =~ m/^(\S+):/)
+            {
+                if (defined($current))
+                {
+                    $output{$current} = $entry;
+                }
+                $current = $1;
+                $entry = {};
+            } elsif ($line =~ m/^\s+(\S+)\s*=\s*(.*)/) # Take the line, and include comments if they are there, because it makes no difference.
+            {
+                $entry->{$1} = $2;
+            }
+        }
+        return \%output;
+    } else
+    {
+        die("could not open $filename");
+    }
+}
+
+sub getusers($$$)
+{
+    my ($passwdpath, $grouppath, $shadowpath) = @_;
+    my $userlist = readpasswd($passwdpath);
+    my $grouplist = readgroup($grouppath);
+    my $shadows = readstanzas($shadowpath);
+
+    # username -> user hash
+    my %users;
+
+    for my $user (@{$userlist})
+    {
+        my $name = $user->{name};
+        $users{$name} = $user;
+    }
+
+    # groupname -> gid
+    my %grouphash;
+
+    # gid -> groupname
+    my %rgrouphash;
+
+    # Push groups into the user hash
+    for my $group (@{$grouplist})
+    {
+        my $name = $group->{name};
+        my $gid = $group->{gid};
+        my $members = $group->{members};
+
+        $grouphash{$name} = $gid;
+        $rgrouphash{$gid} = $name;
+
+        for my $member (@{$members})
+        {
+            if (exists($users{$member}))
+            {
+                my $user = $users{$member};
+                if (not exists($user->{groups}))
+                {
+                    $user->{groups} = [];
+                }
+                push(@{$user->{groups}}, $name);
+            }
+        }
+    }
+
+    while (my ($name, $user) = each(%users))
+    {
+        if (exists($rgrouphash{$user->{pgrp}}))
+        {
+            $user->{pgrp} = $rgrouphash{$user->{pgrp}}
+        }
+        if (exists($shadows->{$name}))
+        {
+            $user->{shadow} = $shadows->{$name};
+        }
+    }
+    return (\%users, \%grouphash);
+}
+
+sub mergeusers(\%\%\%\%)
+{
+    my ($destusers, $destgroups, $sourceusers, $sourcegroups) = @_;
+
+    # Reverse lookup for destinations
+    my %uidhash;
+    my %gidhash;
+
+    while (my ($name, $user) = each(%{$destusers}))
+    {
+        $uidhash{$user->{uid}} = $user;
+    }
+    while (my ($name, $gid) = each(%{$destgroups}))
+    {
+        $gidhash{$gid} = $name;
+    }
+    my $problem = 0;
+    while (my ($name, $user) = each(%{$sourceusers}))
+    {
+        if (not exists($destusers->{$name}))
+        {
+            my $uid = $user->{uid};
+
+            if (exists($uidhash{$uid}))
+            {
+                $problem = 1;
+                print(STDERR "Can not create user $name in destination, because uid $uid is already taken by " . $uidhash{$uid}->{name} . "\n");
+            } else
+            {
+                $uidhash{$uid} = $user;
+                $destusers->{$name} = $user;
+            }
+        }
+    }
+    while (my ($name, $gid) = each(%{$sourcegroups}))
+    {
+        if (not exists($destgroups->{$name}))
+        {
+            if (exists($gidhash{$gid}))
+            {
+                $problem = 1;
+                print(STDERR "Can not create group $name in destination, because gid $gid is already taken by " . $gidhash{$gid} . "\n");
+            } else
+            {
+                $gidhash{$gid} = $name;
+                $destgroups->{$name} = $gid;
+            }
+        }
+    }
+    if ($problem)
+    {
+        die();
     }
 }
 
@@ -69,29 +423,29 @@ mergeusers {B<options>}
 
 Show the help text.
 
-=item B<-p> I<passwd>
+=item B<-G> I<group>
 
-The destination host's /etc/passwd file.
-
-=item B<-g> I<group>
-
-The destination host's /etc/group file
-
-=item B<-s> I<shadow>
-
-The destination host's /etc/security/passwd file
+The source host's /etc/group file
 
 =item B<-P> I<passwd>
 
 The source host's /etc/passwd file.
 
-=item B<-G> I<group>
-
-The source host's /etc/group file
-
 =item B<-S> I<shadow>
 
 The source host's /etc/security/passwd file
+
+=item B<-g> I<group>
+
+The destination host's /etc/group file
+
+=item B<-p> I<passwd>
+
+The destination host's /etc/passwd file.
+
+=item B<-s> I<shadow>
+
+The destination host's /etc/security/passwd file
 
 =back
 
@@ -103,6 +457,10 @@ outputting the files into the CWD (/etc/security/passwd is output as `shadow`).
 This attempts to preserve UIDs.  It skips usernames that already exist in the
 destination.  If a UID is used by a user in the destination that is not the
 same name as the source user, an error is thrown.
+
+It will try to create the group in question with the same gid, and similarly
+throw an error otherwise (if the gid is not significant, you can manually
+create it and retry).
 
 This will only work on AIX systems, unless you can find another system that
 uses /etc/security/passwd as the shadow file in the same stanza format as
