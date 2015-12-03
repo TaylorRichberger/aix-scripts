@@ -3,12 +3,14 @@ use warnings;
 use strict;
 use Time::Piece;
 use Term::Menus;
+use Data::Dumper;
 use JSON;
 
 sub ParseConfig($);
 
 sub main;
 sub dispatch;
+sub clear;
 sub buildopts;
 sub change_account_detail;
 sub change_account_detail_aix;
@@ -42,112 +44,72 @@ sub ParseConfig($) {
     my $location = $_[0];
     my $data;
     local $/ = undef;
-    open(my $file, '<', $location) or return {dir => "/data/IJS", thresholds => []};
+    open(my $file, '<', $location) or return {menu => []};
     binmode $file;
     my $json = <$file>;
     return decode_json($json);
 }
 
+my %data;
+my $config;
+
 sub main {
-    my $config = ParseConfig('/etc/manage_users.json');
+    $config = ParseConfig('/etc/manage_users.json');
     $config->{exit} = 0;
-    my %data;
 
     my %allroutines = (
-        change_account_detail => { description => "Change User Account Details", needs => ['user'], routine => 'change_account_detail' },
-        change_account_expire => { description => "Change User Account Password Expiry", needs => ['user'], routine => 'change_account_expire_linux' },
-        create_admin_account => { description => "Create Admin account", routine => 'create_admin_account' },
-        create_sftp_account => { description => "Create client account", routine => 'create_sftp_account_linux' },
-        create_user_account => { description => "Create User account", routine => 'create_user_account' },
-        delete_account => { description => "Remove user account", needs => ['user'], routine => 'delete_account' },
-        quit => { description => "Exit", routine => 'quit' },
-        reset_password => { description => "Reset password and unlock account", needs => ['user'], routine => 'reset_password' },
-        select_user => { description => "Select User", routine => 'select_user' },
-        unlock_account => { description => "Unlock account without resetting password", needs => ['user'], routine => 'unlock_account' },
-        unselect_user => { description => "Unselect User", needs => ['user'], routine => 'unselect_user' },
-        view_account_detail => { description => "View User Account Details", needs => ['user'], routine => 'view_account_detail' },
-        view_all_users => { description => "View All Users", routine => 'view_all_users' }
+        change_account_detail => 'Change User Account Details',
+        change_account_expire => 'Change User Account Password Expiry',
+        create_admin_account => 'Create Admin account',
+        create_sftp_account => 'Create client account',
+        create_user_account => 'Create User account',
+        delete_account => 'Remove user account',
+        quit => 'Exit',
+        reset_password => 'Reset password and unlock account',
+        select_user => 'Select User',
+        unlock_account => 'Unlock account without resetting password',
+        unselect_user => 'Unselect User',
+        view_account_detail => 'View User Account Details',
+        view_all_users => 'View All Users'
     );
+
+    my %menu = (
+        Name => 'Menu',
+        Select => 'One',
+        Display => 25
+    );
+
+    my $count = 1;
+    for my $item (@{$config->{menu}})
+    {
+        if (exists($allroutines{$item}))
+        {
+            $menu{"Item_$count"} = { Text => $allroutines{$item}, Result => "&dispatch('$item')" };
+            $count++;
+        } else
+        {
+            $menu{"Item_$count"} = { Text => "Could not find requested routine $item!  You are missing functionality!", Result => "&dispatch('$item')" };
+            $count++;
+        }
+    }
+    $menu{"Item_$count"} = { Text => $allroutines{quit}, Result => "&dispatch('quit')" } ;
+
     while (!$config->{exit})
     {
-        system("clear");
-        my @routines;
-        my @displaylist;
-
-        for my $item (@{$config->{menu}})
-        {
-            if (exists($allroutines{$item}))
-            {
-                push(@displaylist, $allroutines{$item}->{description});
-                push(@routines, $allroutines{$item});
-            } else
-            {
-                print("Could not find requested routine $item!  You are missing functionality!\n");
-            }
-        }
-        push(@routines, $allroutines{quit});
-
         if (exists($data{user})) {
-            print "Selected User:  $data{user}->{name} => $data{user}->{comment}\n";
-            print "------------------------------------------------------------------\n\n";
+            $menu{Banner} = "Selected User:  $data{user}->{name} => $data{user}->{comment}";
         } else {
-            print "No user selected!  Please create or select a user to proceed\n";
-            print "------------------------------------------------------------------\n\n";
+            $menu{Banner} = "No user selected!  Please create or select a user to proceed";
         }
 
-        my %menu = (
-            Name => 'Manage Users',
-            Item_1 => {
-                Text => 'test ]Convey[',
-                Convey => \@displaylist,
-                Result => '&selected()'
-            },
-            Select => 'One',
-            Banner => 'Select an option'
-        );
+        my $result = &Menu(\%menu);
 
-        my $selection = &Menu(\%menu);
-
-        print($selection);
-
-        return 0;
-
-        # print routines
-        for (my $i = 0; $i < scalar(@routines); $i++)
-        {
-            print(($i + 1) . ") " . $routines[$i]->{description} . "\n");
-        }
-
-        print "------------------------------------------------------------------\n\n";
-        print "Select Option(default: 1): ";
-
-        my $opt = <>;
-        chomp $opt;
-
-        # if (input is a digit) && (input is > 1) && (input does not exceed list length)
-        if (($opt =~ m/^\d+$/) && ($opt > 0) && ($opt <= scalar(@routines)))
-        {
-            # options are listed starting at 1, but list is 0-indexed
-            $opt--;
-
-            my $routine = $routines[$opt];
-
-            # If any needs are not met, do not continue with routine
-            if (exists($routine->{needs}))
-            {
-                for my $need (@{$routine->{needs}})
-                {
-                    next if (not exists($data{$need}));
-                }
-            }
-
-            dispatch($routine->{routine}, \%data, $config);
-        }
+        $config->{exit} = 1 if ($result eq ']quit[');
     }
 }
 
 sub dispatch {
-    my ($function, $data, $config) = @_;
+    my ($function) = @_;
     my %dispatch = (
         change_account_detail => {AIX => \&change_account_detail_aix, Linux => \&change_account_detail_linux},
         change_account_expire => {Linux => \&change_account_expire_linux},
@@ -163,25 +125,39 @@ sub dispatch {
         view_all_users => {DEFAULT => \&view_all_users},
         quit => {DEFAULT => \&quit},
     );
+    my %needs = (
+        change_account_detail => [qw(user)],
+        change_account_expire => [qw(user)],
+        delete_account => [qw(user)],
+        reset_password => [qw(user)],
+        unlock_account => [qw(user)],
+        unselect_user => [qw(user)],
+        view_account_detail => [qw(user)]
+    );
 
     my $os = $config->{OS};
 
     if (exists($dispatch{$function}))
     {
+        if (exists($needs{$function}))
+        {
+            for my $need (@{$needs{$function}})
+            {
+                return if (not exists($data{$need}));
+            }
+        }
         if (exists($dispatch{$function}->{$os}))
         {
-            $dispatch{$function}->{$os}->($data, $config);
+            $dispatch{$function}->{$os}->(\%data, $config);
         } elsif (exists($dispatch{$function}->{DEFAULT}))
         {
-            $dispatch{$function}->{DEFAULT}->($data, $config);
-        } else
-        {
-            print("There is no $function function for OS $config->{OS}, this is a bug in the program or deployment.\n");
+            $dispatch{$function}->{DEFAULT}->(\%data, $config);
         }
-    } else
-    {
-        print("There is no $function function, this is a bug in the program or deployment.\n");
     }
+}
+
+sub clear {
+    print("\n" x 200);
 }
 
 sub buildopts {
@@ -253,6 +229,7 @@ sub get_users_aix {
     {
         my %user;
         ($user{name}, $user{password}, $user{uid}, $user{gid}, $user{quota}, $user{comment}, $user{gcos}, $user{home}, $user{shell}, $user{expire}) = @pw;
+        $user{comment} ||= $user{gcos};
 
         $user{pgrp} = (getgrgid($user{gid}))[0];
         $user{groups} = [];
@@ -268,7 +245,6 @@ sub get_users_aix {
             $user{lastchange} = '';
         }
 
-        #$user{maxage} = `sudo lssec -f /etc/security/user -s $user{name} -a maxage`;
         if (defined($secuser{$user{name}}) && defined($secuser{$user{name}}{maxage}) && ($secuser{$user{name}}{maxage} =~ m/^\d+$/))
         {
             $user{maxage} = $secuser{$user{name}}{maxage};
@@ -310,7 +286,7 @@ sub get_users_linux {
     my @users;
     my %userrefs;
 
-    my @shadowLines = split(/\n/, `sudo cat /etc/shadow`);
+    my @shadowLines = split(/\n/, `cat /etc/shadow`);
     chomp(@shadowLines);
 
     setpwent();
@@ -318,6 +294,7 @@ sub get_users_linux {
     {
         my %user;
         ($user{name}, $user{password}, $user{uid}, $user{gid}, $user{quota}, $user{comment}, $user{gcos}, $user{home}, $user{shell}, $user{expire}) = @pw;
+        $user{comment} ||= $user{gcos};
 
         $user{pgrp} = (getgrgid($user{gid}))[0];
         $user{groups} = [];
@@ -377,31 +354,44 @@ sub select_user {
         }
     }
     endpwent();
-    system("clear");
+    clear();
 
     if (scalar(@matches) > 0)
     {
+        my %menu = (
+            Name => 'Menu',
+            Select => 'One',
+            Banner => 'Choose a user',
+            Display => 25,
+            Item_1 => {
+                Text => ']Convey[',
+                Convey => []
+            },
+        );
+
+        my %backsearch;
+
         for (my $i = 0; $i < scalar(@matches); ++$i)
         {
             my $match = $matches[$i];
 
-            print "$i) $match->{name}\t$match->{comment}\n";
+            my $userstring = sprintf('%-16s%s', $match->{name}, $match->{comment});
+            push(@{$menu{Item_1}->{Convey}}, $userstring);
+            $backsearch{$userstring} = $match;
         }
-        print "Select user index: ";
-        my $usr_index = <>;
-        chomp $usr_index;
-        my $match = $matches[$usr_index];
-        my $user = {};
+        my $selection = &Menu(\%menu);
+        return if ($selection eq ']quit[');
+
+        my $user = $backsearch{$selection};
+
         $data->{user} = $user;
 
-        $user->{name} = $match->{name};
-        $user->{comment} = $match->{comment};
-        $user->{pgrp} = getgrgid($match->{gid});
+        $user->{pgrp} = getgrgid($user->{gid});
         $user->{groups} = [];
         setgrent();
         while (my ($name, $passwd, $gid, $members) = getgrent())
         {
-            my $username = $match->{name};
+            my $username = $user->{name};
             if (grep(/^$username$/, split(' ', $members)))
             {
                 push(@{$user->{groups}}, $name);
@@ -423,21 +413,28 @@ sub view_all_users {
 
     @users = get_users($config);
 
-    my @sortoptions = (['name', 'User Name'], ['comment', 'Comment Field'], ['lastchange', 'Last Password Change'], ['expirationdate', 'Days until expiration'], ['uid', 'User ID'], ['pgrp', 'Primary Group'], ['maxage', 'Max Password Age']);
-    my $option;
-    while ((!defined($option)) or (length($option) == 0) or (($option < 0) or ($option > $#sortoptions)))
+    my %sortoptions = ('User Name' => 'name',  'Comment Field' => 'comment',  'Last Password Change' => 'lastchange',  'Days until expiration' => 'expirationdate',  'User ID' => 'uid',  'Primary Group' => 'pgrp',  'Max Password Age' => 'maxage');
+    my %sortmenu = (
+        Name => 'Menu',
+        Select => 'One',
+        Banner => 'Select sort field',
+        Display => 25,
+        Item_1 => {
+            Text => ']Convey[',
+            Convey => []
+        },
+    );
+    for my $option (keys(%sortoptions))
     {
-        system("clear");
-        for my $i (0..$#sortoptions)
-        {
-            print("$i) $sortoptions[$i]->[1]\n");
-        }
-        print("Select sort field: ");
-        $option = <>;
-        chomp($option);
+        push(@{$sortmenu{Item_1}->{Convey}}, $option);
     }
-    my $sort = $sortoptions[$option]->[0];
-    my $sortdesc = $sortoptions[$option]->[1];
+    my $option = &Menu(\%sortmenu);
+
+    return if ($option eq ']quit[');
+
+    my $sort = $sortoptions{$option};
+    my $sortdesc = $option;
+
     my @susers = sort {
             if (((!exists($a->{$sort})) or (length($a->{$sort}) == 0)) and ((!exists($b->{$sort})) or (length($b->{$sort}) == 0)))
             {
@@ -460,19 +457,32 @@ sub view_all_users {
             }
         } @users;
 
-    $option = undef;
-    print("Would you like to reverse the sort? <y/n>: ");
-    $option = <>;
-    chomp($option);
-    if ($option =~ m/^y/i)
+    $option = &Menu({
+        Name => 'Menu',
+        Select => 'One',
+        Banner => 'Would you like to reverse the sort?',
+        Display => 25,
+        Item_1 => {
+            Text => ']Convey[',
+            Convey => [qw(yes no)]
+        },
+    });
+
+    if ($option eq 'yes')
     {
         @susers = reverse(@susers);
     }
 
-    system("clear");
-
-    printf("%15.15s %25.25s %25.25s\n", 'Username', 'Comment', $sortdesc);
-    printf("%15.15s %25.25s %25.25s\n", '--------', '-------', '-' x length($sortdesc));
+    my %menu = (
+        Name => 'Menu',
+        Select => 'One',
+        Banner => sprintf('%14s%15.15s %25.25s %25.25s', '', 'Username', 'Comment', $sortdesc),
+        Display => 25,
+        Item_1 => {
+            Text => ']Convey[',
+            Convey => []
+        },
+    );
 
     # Current date in days since the epoch
     my $date = int(time/86400);
@@ -482,20 +492,16 @@ sub view_all_users {
         $hash{lastchange} = ((length($user->{lastchange}) > 0) ? sprintf('%.2f days ago', $date - $user->{lastchange}) : 'N/A');
         $hash{expirationdate} = ((length($user->{expirationdate}) > 0) ? sprintf('%.2f', $date - $user->{expirationdate}) : 'Never');
         $hash{maxage} = ((length($user->{maxage}) > 0) ? $user->{maxage} : 'None');
-        printf("%15.15s %25.25s %25.25s\n", $hash{name}, $hash{comment}, $hash{$sort});
+        push(@{$menu{Item_1}->{Convey}}, sprintf("%15.15s %25.25s %25.25s", $hash{name}, $hash{comment}, $hash{$sort}));
     }
-
-    printf("%15.15s %25.25s %25.25s\n", '--------', '-------', '-' x length($sortdesc));
-    printf("%15.15s %25.25s %25.25s\n", 'Username', 'Comment', $sortdesc);
-
-    print "\n\nPress enter to continue";
-    my $ret = <>;
+    &Menu(\%menu);
+    return 0;
 }
 
 sub view_account_detail_aix {
     my ($data, $config) = @_;
     my $user = $data->{user};
-    my @lsuser = split(/ /,`sudo lsuser $user->{name}`);
+    my @lsuser = split(/ /,`lsuser $user->{name}`);
     my %userdetail;
     foreach my $user (@lsuser) {
         chomp;
@@ -504,47 +510,48 @@ sub view_account_detail_aix {
             $userdetail{$el[0]} = $el[1];
         }
     }
-    system("clear");
-    printf("%-40s%s\n", "username:", $user->{name});
-    printf("%-40s%s\n", "primary group:", $userdetail{'pgrp'});
-    printf("%-40s%s\n", "groups:", $userdetail{'groups'});
-    printf("%-40s%s\n", "shell:", $userdetail{'shell'});
-    printf("%-40s%s\n", "home:", $userdetail{'home'});
-    printf("%-40s%s\n", "login:", $userdetail{'login'});
-    printf("%-40s%s\n", "account locked:", $userdetail{'account_locked'});
-    printf("%-40s%s\n", "unsuccessful login count:", defined($userdetail{'unsuccessful_login_count'}) ? $userdetail{'unsuccessful_login_count'} : 0);
-    printf("%-40s%s\n", "last successful login:", localtime($userdetail{'time_last_login'}));
-    printf("%-40s%s\n", "last unsuccessful login:", localtime($userdetail{'time_lastunsuccessful_login'}));
-    printf("Press enter to continue: ");
-    my $input = <>;
+    printf("%-40s%s\n", 'username:', $user->{name});
+    printf("%-40s%s\n", 'primary group:', $userdetail{'pgrp'});
+    printf("%-40s%s\n", 'groups:', $userdetail{'groups'});
+    printf("%-40s%s\n", 'shell:', $userdetail{'shell'});
+    printf("%-40s%s\n", 'home:', $userdetail{'home'});
+    printf("%-40s%s\n", 'login:', $userdetail{'login'});
+    printf("%-40s%s\n", 'account locked:', $userdetail{'account_locked'});
+    printf("%-40s%s\n", 'unsuccessful login count:', defined($userdetail{'unsuccessful_login_count'}) ? $userdetail{'unsuccessful_login_count'} : 0);
+    printf("%-40s%s\n", 'last successful login:', localtime($userdetail{'time_last_login'}));
+    printf("%-40s%s\n", 'last unsuccessful login:', localtime($userdetail{'time_lastunsuccessful_login'}));
+
+    print("\nPress Enter to Continue\n");
+    my $v = <>;
+
+    return;
 }
 
 sub view_account_detail_linux {
     my ($data, $config) = @_;
     my $user = $data->{user};
-    system("clear");
-    print "username:    $user->{name}\n";
-    print "pgroup:      $user->{pgrp}\n";
-    print "groups:      " . join(', ', @{$user->{groups}}) . "\n";
-    print "uid:         $user->{uid}\n";
-    print "gid:         $user->{gid}\n";
-    print "details:     $user->{comment}\n";
-    print "home:        $user->{home}\n";
-    print "shell:       $user->{shell}\n";
-    print "\n";
-    print "Expiry information:\n";
-    print `sudo chage -l $user->{name}`;
-    print "\n";
-    print "Press enter to continue: ";
-    my $input = <>;
+    printf("%-20s%s\n", 'username:', $user->{name});
+    printf("%-20s%s\n", 'pgroup:', $user->{pgrp});
+    printf("%-20s%s\n", 'groups:', join(', ', @{$user->{groups}}));
+    printf("%-20s%s\n", 'uid:', $user->{uid});
+    printf("%-20s%s\n", 'gid:', $user->{gid});
+    printf("%-20s%s\n", 'details:', $user->{comment});
+    printf("%-20s%s\n", 'home:', $user->{home});
+    printf("%-20s%s\n", 'shell:', $user->{shell});
+    print(`chage -l $user->{name}`);
+
+    print("\nPress Enter to Continue\n");
+    my $v = <>;
+
+    return;
 }
 
 sub change_account_detail_aix {
     my ($data, $config) = @_;
     my $user = $data->{user};
-    system("clear");
+    clear();
 
-    my @lsuser = split(/ /,`sudo lsuser $user->{name}`);
+    my @lsuser = split(/ /,`lsuser $user->{name}`);
     my $username = shift @lsuser;
     my %userdetail;
 
@@ -558,9 +565,9 @@ sub change_account_detail_aix {
 
     my %details;
 
-    my $correct = "N";
+    my $correct;
 
-    while ( $correct !~ /[Yy]/ ) {
+    do { 
         %details = %userdetail;
         my $input;
         print "Modify account $username:\n";
@@ -577,31 +584,46 @@ sub change_account_detail_aix {
         print "home [$details{home}]:\n";
         $input = <>;  chomp $input;
         $details{home} = $input if ($input ne "");
-        print "-----------------------------------------------------------\n\n";
-        print "username:                 $username\n";
-        print "primary group:            $details{'pgrp'}\n";
-        print "groups:                   $details{'groups'}\n";
-        print "shell:                    $details{'shell'}\n";
-        print "home:                     $details{'home'}\n";
-        print "-----------------------------------------------------------\n\n";
-        print "Is this correct? (Y|N) ";
-        $correct = <>;  chomp $correct;
-    }  
-    system("sudo chuser 'pgrp=$details{pgrp}' 'groups=$details{groups}' 'shell=$details{shell}' 'home=$details{home}' $username");
 
-    view_account_detail(@_);
+        my $banner = '-' x 60;
+        $banner .= "\n";
+        $banner .= sprintf("%-26s%s\n", 'username:', $username);
+        $banner .= sprintf("%-26s%s\n", 'primary group:', $details{'pgrp'});
+        $banner .= sprintf("%-26s%s\n", 'groups:', $details{'groups'});
+        $banner .= sprintf("%-26s%s\n", 'shell:', $details{'shell'});
+        $banner .= sprintf("%-26s%s\n", 'home:', $details{'home'});
+        $banner .= '-' x 60;
+        $banner .= "\n";
+        $banner .= "Is this correct?";
+        $correct = &Menu({
+            Name => 'Menu',
+            Select => 'One',
+            Banner => $banner,
+            Display => 25,
+            Item_1 => {
+                Text => ']Convey[',
+                Convey => [qw(yes no)]
+            },
+        });
+
+        return if ($correct eq ']quit[');
+    } while ($correct ne 'yes');
+    system("chuser 'pgrp=$details{pgrp}' 'groups=$details{groups}' 'shell=$details{shell}' 'home=$details{home}' $username");
+
+    view_account_detail_aix(@_);
+    return;
 }
 
 sub change_account_detail_linux {
     my ($data, $config) = @_;
     my $user = $data->{user};
-    system("clear");
-
-    my $correct = "N";
+    clear();
 
     my %details;
 
-    while ( $correct !~ /[Yy]/ ) {
+    my $correct;
+
+    do {
         %details = %{$user};
         $details{groups} = join(',', @{$user->{groups}});
 
@@ -623,18 +645,31 @@ sub change_account_detail_linux {
         print "home [$details{home}]:";
         $input = <>;  chomp $input;
         $details{home} = $input if ($input ne "");
-        print "-----------------------------------------------------------\n\n";
-        print "username:                 $details{name}\n";
-        print "details:                  $details{comment}\n";
-        print "primary group:            $details{pgrp}\n";
-        print "groups:                   $details{groups}\n";
-        print "shell:                    $details{shell}\n";
-        print "home:                     $details{home}\n";
-        print "-----------------------------------------------------------\n\n";
-        print "Is this correct? (Y|N) ";
-        $correct = <>;  chomp $correct;
-    }
-    system("sudo usermod -c '$details{comment}' -d '$details{home}' -s '$details{shell}' -g '$details{pgrp}' -G '$details{groups}' $details{name}");
+
+        my $banner = '-' x 60;
+        $banner .= "\n";
+        $banner .= sprintf("%-26s%s\n", 'username:', $details{name});
+        $banner .= sprintf("%-26s%s\n", 'details:', $details{comment});
+        $banner .= sprintf("%-26s%s\n", 'primary group:', $details{pgrp});
+        $banner .= sprintf("%-26s%s\n", 'groups:', $details{groups});
+        $banner .= sprintf("%-26s%s\n", 'shell:', $details{shell});
+        $banner .= sprintf("%-26s%s\n", 'home:', $details{home});
+        $banner .= '-' x 60;
+        $banner .= "\n";
+        $banner .= "Is this correct?";
+        $correct = &Menu({
+            Name => 'Menu',
+            Select => 'One',
+            Banner => $banner,
+            Display => 25,
+            Item_1 => {
+                Text => ']Convey[',
+                Convey => [qw(yes no)]
+            },
+        });
+        return if ($correct eq ']quit[');
+    } while ($correct ne 'yes');
+    system("usermod -c '$details{comment}' -d '$details{home}' -s '$details{shell}' -g '$details{pgrp}' -G '$details{groups}' $details{name}");
 
     $user->{comment} = $details{comment};
     $user->{home} = $details{home};
@@ -642,94 +677,137 @@ sub change_account_detail_linux {
     $user->{pgrp} = $details{pgrp};
     @{$user->{groups}} = split(/,/, $details{groups});
 
-    view_account_detail(@_);
+    view_account_detail_linux(@_);
+    return;
 }
 
 sub change_account_expire_linux {
     my ($data, $config) = @_;
     my $user = $data->{user};
-    system("clear");
 
-    my $correct = "N";
+    my $correct = 'no';
 
-    my $opts;
+    my @opts;
 
-    while ( $correct !~ /[Yy]/ ) {
-        $opts = "";
+    do {
+        clear();
+
+        @opts = ($user->{name});
+        my $banner = '';
 
         my $input;
         print "Modify account $user->{name}\n";
         print "Enter nothing to keep old value (viewable from user account details)\n";
+
         print "Expire date (YYYY-MM-DD format.  -1 to disable): ";
         $input = <>;  chomp $input;
-        $opts .= " -E '$input'" if ($input ne "");
+        push(@opts, ['E', $input]) if ($input ne "");
+        $banner .= sprintf("%-50s%s\n", 'epire date:', $input) if ($input ne "");
+
         print "Number of days of inactivity after password expires to lock account (-1 to disable): ";
         $input = <>;  chomp $input;
-        $opts .= " -I '$input'" if ($input ne "");
+        push(@opts, ['I', $input]) if ($input ne "");
+        $banner .= sprintf("%-50s%s\n", 'inactivity days:', $input) if ($input ne "");
+
         print "Minimum number of days between password changes (0 to disable, and let password be changed at any time): ";
         $input = <>;  chomp $input;
-        $opts .= " -m '$input'" if ($input ne "");
+        push(@opts, ['m', $input]) if ($input ne "");
+        $banner .= sprintf("%-50s%s\n", 'minimum days between changes:', $input) if ($input ne "");
+
         print "Maximum number of days between password changes (-1 to disable, making a password never expire): ";
         $input = <>;  chomp $input;
-        $opts .= " -M '$input'" if ($input ne "");
+        push(@opts, ['M', $input]) if ($input ne "");
+        $banner .= sprintf("%-50s%s\n", 'maximum days between changes:', $input) if ($input ne "");
+
         print "Number of days before expiry to warn that a password is going to expire:  ";
         $input = <>;  chomp $input;
-        $opts .= " -W '$input'" if ($input ne "");
-        print "Is this correct? (Y|N) ";
-        $correct = <>;  chomp $correct;
-    }
-    system("sudo chage $opts '$user->{name}'");
+        push(@opts, ['W', $input]) if ($input ne "");
+        $banner .= sprintf("%-50s%s\n", 'days to warn:', $input) if ($input ne "");
 
-    view_account_detail(@_);
+        $banner .= "\n";
+        $banner .= "Is this correct?";
+
+        $correct = &Menu({
+            Name => 'Menu',
+            Select => 'One',
+            Banner => $banner,
+            Display => 25,
+            Item_1 => {
+                Text => ']Convey[',
+                Convey => [qw(yes no)]
+            },
+        });
+
+        return if ($correct eq ']quit[');
+    } while ( $correct ne 'yes' );
+    system('chage ' . buildopts(\@opts));
+
+    view_account_detail_linux(@_);
+    return;
 }
 
 sub reset_password_aix {
     my ($data, $config) = @_;
     my $user = $data->{user};
     print "Resetting account: $user->{name} for " . (split(/,/, $user->{comment}))[0] . "\n";
-    system("sudo passwd $user->{name}");
-    print "\nForce password change? (Y|N):";
-    my $chpw = <>; chomp $chpw;
-    if ($chpw =~ /[Nn]/) {
-        system("sudo pwdadm -c $user->{name}");
+    system("passwd $user->{name}");
+
+    my $chpw = &Menu({
+        Name => 'Menu',
+        Select => 'One',
+        Banner => 'Force password change?',
+        Display => 25,
+        Item_1 => {
+            Text => ']Convey[',
+            Convey => [qw(yes no)]
+        },
+    });
+
+    if ($chpw ne 'yes') {
+        system("pwdadm -c $user->{name}");
     }
     unlock_account_aix(@_);
+    return;
 }
 
 sub unlock_account_aix {
     my ($data, $config) = @_;
     my $user = $data->{user};
-    print "Unlocking account: $user->{name} for " . (split(/,/, $user->{comment}))[0] . "\n";
-    system("sudo chuser unsuccessful_login_count=0 account_locked=false $user->{name}");
-    print "\nUser Successfully Unlocked!\n";
-    print "\nPress Enter to Continue\n";
+    print("Unlocking account: $user->{name} for " . (split(/,/, $user->{comment}))[0] . "\n");
+    system("chuser unsuccessful_login_count=0 account_locked=false $user->{name}");
+    print("\nUser Successfully Unlocked!\n");
+    print("\nPress Enter to Continue\n");
     my $v = <>;
+    return;
 }
 sub reset_password_linux {
     my ($data, $config) = @_;
     my $user = $data->{user};
     print "Resetting account: $user->{name} for $user->{comment}\n";
-    system("sudo passwd $user->{name}");
+    system("passwd $user->{name}");
     unlock_account_linux(@_);
+    return;
 }
 
 sub unlock_account_linux {
     my ($data, $config) = @_;
     my $user = $data->{user};
     print "Unlocking account: $user->{name} for $user->{comment}\n";
-    system("sudo passwd -u $user->{name}");
-    system("sudo chage -d " . localtime->strftime('%F') . " $user->{name}");
+    system("passwd -u $user->{name}");
+    system("chage -d " . localtime->strftime('%F') . " $user->{name}");
     print "\nUser Successfully Unlocked!\n";
     print "\nPress Enter to Continue\n";
     my $v = <>;
+    return;
 }
 
 sub create_user_account {
     my ($data, $config) = @_;
-    system("clear");
-    my $correct = "N";
+    my $correct = "no";
     my ($username, $fullname, $phone, $location, $business);
-    while ( $correct !~ /[Yy]/ ) {
+
+    do {
+        clear();
         print "Create new account:\n";
         print "-----------------------------------------------------------\n\n";
         print "Enter username: ";
@@ -742,20 +820,31 @@ sub create_user_account {
         $location = <>; chomp $location;
         print "Enter Business Unit: ";
         $business = <>; chomp $business;
-        print "\n\n-----------------------------------------------------------\n\n";
-        print "Please confim user details:\n";
-        print "-----------------------------------------------------------\n\n";
-        print "Username:  $username\n";
-        print "Fullname:  $fullname\n";
-        print "Phone:     $phone\n";
-        print "Location:  $location\n";
-        print "Business:  $business\n";
-        print "-----------------------------------------------------------\n\n";
-        print "Is this correct? (Y|N) ";
-        $correct = <>;  chomp $correct;
-    }  
-    system("clear");
-    print "Creating account $username for $fullname ...\n";
+        my $banner = '-' x 60;
+        $banner .= "\n";
+        $banner .= "Please confim user details:\n";
+        $banner .= sprintf("%-26s%s\n", 'Username:', $username);
+        $banner .= sprintf("%-26s%s\n", 'Fullname:', $fullname);
+        $banner .= sprintf("%-26s%s\n", 'Phone:', $phone);
+        $banner .= sprintf("%-26s%s\n", 'Location:', $location);
+        $banner .= sprintf("%-26s%s\n", 'Business:', $business);
+        $banner .= '-' x 60;
+        $banner .= "\n";
+        $banner .= "Is this correct?";
+        $correct = &Menu({
+            Name => 'Menu',
+            Select => 'One',
+            Banner => $banner,
+            Display => 25,
+            Item_1 => {
+                Text => ']Convey[',
+                Convey => [qw(yes no)]
+            },
+        });
+        return if ($correct eq ']quit[');
+
+    } while ($correct ne 'yes');
+    print("Creating account $username for $fullname ...\n");
 
     my @opts;
     if ($config->{user}->{sharedhome})
@@ -776,9 +865,9 @@ sub create_user_account {
     push(@opts, ['c', "$fullname,$phone,$location,$business,USER,USER"]);
     push(@opts, $username);
 
-    system('sudo useradd ' . buildopts(\@opts));
+    system('useradd ' . buildopts(\@opts));
 
-    system("sudo passwd $username");
+    system("passwd $username");
     print "\n\nAccount creation complete.\n";
     print "\n\nPress enter to continue";
     my $ret = <>;
@@ -786,10 +875,10 @@ sub create_user_account {
 
 sub create_admin_account {
     my ($data, $config) = @_;
-    system("clear");
+    clear();
     my $correct = "N";
     my ($username, $fullname, $phone, $location, $business);
-    while ( $correct !~ /[Yy]/ ) {
+    do {
         print "Create new account:\n";
         print "-----------------------------------------------------------\n\n";
         print "Enter username: ";
@@ -802,19 +891,30 @@ sub create_admin_account {
         $location = <>; chomp $location;
         print "Enter Business Unit: ";
         $business = <>; chomp $business;
-        print "\n\n-----------------------------------------------------------\n\n";
-        print "Please confim user details:\n";
-        print "-----------------------------------------------------------\n\n";
-        print "Username:  $username\n";
-        print "Fullname:  $fullname\n";
-        print "Phone:     $phone\n";
-        print "Location:  $location\n";
-        print "Business:  $business\n";
-        print "-----------------------------------------------------------\n\n";
-        print "Is this correct? (Y|N) ";
-        $correct = <>;  chomp $correct;
-    }  
-    system("clear");
+
+        my $banner = '-' x 60;
+        $banner .= "\n";
+        $banner .= "Please confim user details:\n";
+        $banner .= sprintf("%-26s%s\n", 'Username:', $username);
+        $banner .= sprintf("%-26s%s\n", 'Fullname:', $fullname);
+        $banner .= sprintf("%-26s%s\n", 'Phone:', $phone);
+        $banner .= sprintf("%-26s%s\n", 'Location:', $location);
+        $banner .= sprintf("%-26s%s\n", 'Business:', $business);
+        $banner .= '-' x 60;
+        $banner .= "\n";
+        $banner .= "Is this correct?";
+        $correct = &Menu({
+            Name => 'Menu',
+            Select => 'One',
+            Banner => $banner,
+            Display => 25,
+            Item_1 => {
+                Text => ']Convey[',
+                Convey => [qw(yes no)]
+            },
+        });
+        return if ($correct eq ']quit[');
+    } while ($correct ne 'yes');
     print "Creating account $username for $fullname ...\n";
 
     my @opts;
@@ -836,9 +936,9 @@ sub create_admin_account {
     push(@opts, ['c', "$fullname,$phone,$location,$business,USER,USER"]);
     push(@opts, $username);
 
-    system('sudo useradd ' . buildopts(\@opts));
+    system('useradd ' . buildopts(\@opts));
 
-    system("sudo passwd $username");
+    system("passwd $username");
     print "\n\nAccount creation complete.\n";
     print "\n\nPress enter to continue";
     my $ret = <>;
@@ -846,10 +946,10 @@ sub create_admin_account {
 
 sub create_sftp_account_linux {
     my ($data, $config) = @_;
-    system("clear");
+    clear();
     my $correct = "N";
     my ($username, $fullname, $phone, $location, $business);
-    while ( $correct !~ /[Yy]/ ) {
+    do {
         print "Create new SFTP account:\n";
         print "-----------------------------------------------------------\n\n";
         print "Enter username: ";
@@ -862,19 +962,30 @@ sub create_sftp_account_linux {
         $location = <>; chomp $location;
         print "Enter Business Unit: ";
         $business = <>; chomp $business;
-        print "\n\n-----------------------------------------------------------\n\n";
-        print "Please confim user details:\n";
-        print "-----------------------------------------------------------\n\n";
-        print "Username:  $username\n";
-        print "Fullname:  $fullname\n";
-        print "Phone:     $phone\n";
-        print "Location:  $location\n";
-        print "Business:  $business\n";
-        print "-----------------------------------------------------------\n\n";
-        print "Is this correct? (Y|N) ";
-        $correct = <>;  chomp $correct;
-    }  
-    system("clear");
+
+        my $banner = '-' x 60;
+        $banner .= "\n";
+        $banner .= "Please confim user details:\n";
+        $banner .= sprintf("%-26s%s\n", 'Username:', $username);
+        $banner .= sprintf("%-26s%s\n", 'Fullname:', $fullname);
+        $banner .= sprintf("%-26s%s\n", 'Phone:', $phone);
+        $banner .= sprintf("%-26s%s\n", 'Location:', $location);
+        $banner .= sprintf("%-26s%s\n", 'Business:', $business);
+        $banner .= '-' x 60;
+        $banner .= "\n";
+        $banner .= "Is this correct?";
+        $correct = &Menu({
+            Name => 'Menu',
+            Select => 'One',
+            Banner => $banner,
+            Display => 25,
+            Item_1 => {
+                Text => ']Convey[',
+                Convey => [qw(yes no)]
+            },
+        });
+        return if ($correct eq ']quit[');
+    } while ($correct ne 'yes');
     print "Creating SFTP account $username for $fullname ...\n";
 
     my @opts;
@@ -903,26 +1014,26 @@ sub create_sftp_account_linux {
     push(@opts, $username);
 
 
-    system('sudo useradd ' . buildopts(\@opts));
+    system('useradd ' . buildopts(\@opts));
 
 
-    system('sudo useradd ' . buildopts(\@opts));
-    system('sudo chown ' . buildopts(["root:$ftpgrp", $homedir]));
-    system('sudo chmod ' . buildopts([755, $homedir]));
+    system('useradd ' . buildopts(\@opts));
+    system('chown ' . buildopts(["root:$ftpgrp", $homedir]));
+    system('chmod ' . buildopts([755, $homedir]));
 
     my $filesdir = "$homedir/files";
 
-    system('sudo mkdir ' . buildopts([$filesdir]));
-    system('sudo chown ' . buildopts(["$username:$ftpgrp", $filesdir]));
-    system('sudo chmod ' . buildopts([700, $filesdir]));
-    system('sudo setfacl ' . buildopts([['m', "u:$username:rwx"], $filesdir]));
-    system('sudo setfacl ' . buildopts([['d'], ['m', "u:$username:rwx"], $filesdir]));
-    system('sudo setfacl ' . buildopts([['m', "g:$ftpgrp:rwx"], $filesdir]));
-    system('sudo setfacl ' . buildopts([['d'], ['m', "g:$ftpgrp:rwx"], $filesdir]));
-    system('sudo setfacl ' . buildopts([['m', "g:$config->{admin}->{group}:rwx"], $filesdir]));
-    system('sudo setfacl ' . buildopts([['d'], ['m', "g:$config->{admin}->{group}:rwx"], $filesdir]));
+    system('mkdir ' . buildopts([$filesdir]));
+    system('chown ' . buildopts(["$username:$ftpgrp", $filesdir]));
+    system('chmod ' . buildopts([700, $filesdir]));
+    system('setfacl ' . buildopts([['m', "u:$username:rwx"], $filesdir]));
+    system('setfacl ' . buildopts([['d'], ['m', "u:$username:rwx"], $filesdir]));
+    system('setfacl ' . buildopts([['m', "g:$ftpgrp:rwx"], $filesdir]));
+    system('setfacl ' . buildopts([['d'], ['m', "g:$ftpgrp:rwx"], $filesdir]));
+    system('setfacl ' . buildopts([['m', "g:$config->{admin}->{group}:rwx"], $filesdir]));
+    system('setfacl ' . buildopts([['d'], ['m', "g:$config->{admin}->{group}:rwx"], $filesdir]));
 
-    system("sudo passwd $username");
+    system("passwd $username");
 
     print "\n\nSFTP account creation complete.\n";
     print "\n\nPress enter to continue";
@@ -932,20 +1043,29 @@ sub create_sftp_account_linux {
 sub delete_account {
     my ($data, $config) = @_;
     my $user = $data->{user};
-    system("clear");
-    print "##################################################################\n";
-    print "ABOUT TO REMOVE USER ACCCOUNT!!!\n";
-    print "##################################################################\n\n";
+    clear();
+    my $banner = "##################################################################\n";
+    $banner .= "ABOUT TO REMOVE USER ACCCOUNT!!!\n";
+    $banner .= "##################################################################\n\n";
 
-    print "Enter Y to confirm account removal for user $user->{name}: ";
-    my $con = <>; chomp $con;
-    if ($con eq "Y") {
-        system("sudo userdel $user->{name}");
+    $banner .= "Are you sure you want to delete user $user->{name}?";
+    my $con = &Menu({
+        Name => 'Menu',
+        Select => 'One',
+        Banner => $banner,
+        Display => 25,
+        Item_1 => {
+            Text => ']Convey[',
+            Convey => [qw(yes no)]
+        },
+    });
+
+    if ($con eq 'yes') {
+        system("userdel $user->{name}");
         print "\n\nUser: $user->{name} removed from $config->{OS}.\n";
         delete($data->{user});
-    }
-    else {
-        print "\n\nYou did not enter Y, returning to main menu without removing user.\n";
+    } else {
+        print "\n\nYou did not select yes, returning to main menu without removing user.\n";
     }
     print "\nPress enter to continue ";
     my $ret = <>;
@@ -965,7 +1085,7 @@ sub parsestanzas {
     my %output;
     my $stanza = 'default';
 
-    open(my $file, '-|', "sudo cat $filename");
+    open(my $file, '-|', "cat $filename");
     while (my $line = <$file>)
     {
         chomp($line);
