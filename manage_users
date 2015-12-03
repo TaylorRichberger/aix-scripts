@@ -2,6 +2,7 @@
 use warnings;
 use strict;
 use Time::Piece;
+use Term::Menus;
 use JSON;
 
 sub ParseConfig($);
@@ -71,11 +72,13 @@ sub main {
     {
         system("clear");
         my @routines;
+        my @displaylist;
 
         for my $item (@{$config->{menu}})
         {
             if (exists($allroutines{$item}))
             {
+                push(@displaylist, $allroutines{$item}->{description});
                 push(@routines, $allroutines{$item});
             } else
             {
@@ -91,6 +94,23 @@ sub main {
             print "No user selected!  Please create or select a user to proceed\n";
             print "------------------------------------------------------------------\n\n";
         }
+
+        my %menu = (
+            Name => 'Manage Users',
+            Item_1 => {
+                Text => 'test ]Convey[',
+                Convey => \@displaylist,
+                Result => '&selected()'
+            },
+            Select => 'One',
+            Banner => 'Select an option'
+        );
+
+        my $selection = &Menu(\%menu);
+
+        print($selection);
+
+        return 0;
 
         # print routines
         for (my $i = 0; $i < scalar(@routines); $i++)
