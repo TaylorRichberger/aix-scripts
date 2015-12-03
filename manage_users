@@ -26,6 +26,7 @@ sub reset_password_linux;
 sub select_user;
 sub unlock_account_aix;
 sub unlock_account_linux;
+sub unselect_user;
 sub view_account_detail_aix;
 sub view_account_detail_linux;
 sub view_all_users;
@@ -49,21 +50,22 @@ sub ParseConfig($) {
 sub main {
     my $config = ParseConfig('/etc/manage_users.json');
     $config->{exit} = 0;
-    my %user;
+    my %data;
 
     my %allroutines = (
-        change_account_detail => { description => "Change User Account Details", needsUser => 1, routine => 'change_account_detail' },
-        change_account_expire => { description => "Change User Account Password Expiry", needsUser => 1, routine => 'change_account_expire_linux' },
-        create_admin_account => { description => "Create Admin account", needsUser => 0, routine => 'create_admin_account' },
-        create_sftp_account => { description => "Create client account", needsUser => 0, routine => 'create_sftp_account_linux' },
-        create_user_account => { description => "Create User account", needsUser => 0, routine => 'create_user_account' },
-        delete_account => { description => "Remove user account", needsUser => 1, routine => 'delete_account' },
-        quit => { description => "Exit", needsUser => 0, routine => 'quit' },
-        reset_password => { description => "Reset password and unlock account", needsUser => 1, routine => 'reset_password' },
-        select_user => { description => "Select User", needsUser => 0, routine => 'select_user' },
-        unlock_account => { description => "Unlock account without resetting password", needsUser => 1, routine => 'unlock_account' },
-        view_account_detail => { description => "View User Account Details", needsUser => 1, routine => 'view_account_detail' },
-        view_all_users => { description => "View All Users", needsUser => 0, routine => 'view_all_users' }
+        change_account_detail => { description => "Change User Account Details", needs => ['user'], routine => 'change_account_detail' },
+        change_account_expire => { description => "Change User Account Password Expiry", needs => ['user'], routine => 'change_account_expire_linux' },
+        create_admin_account => { description => "Create Admin account", routine => 'create_admin_account' },
+        create_sftp_account => { description => "Create client account", routine => 'create_sftp_account_linux' },
+        create_user_account => { description => "Create User account", routine => 'create_user_account' },
+        delete_account => { description => "Remove user account", needs => ['user'], routine => 'delete_account' },
+        quit => { description => "Exit", routine => 'quit' },
+        reset_password => { description => "Reset password and unlock account", needs => ['user'], routine => 'reset_password' },
+        select_user => { description => "Select User", routine => 'select_user' },
+        unlock_account => { description => "Unlock account without resetting password", needs => ['user'], routine => 'unlock_account' },
+        unselect_user => { description => "Unselect User", needs => ['user'], routine => 'unselect_user' },
+        view_account_detail => { description => "View User Account Details", needs => ['user'], routine => 'view_account_detail' },
+        view_all_users => { description => "View All Users", routine => 'view_all_users' }
     );
     while (!$config->{exit})
     {
@@ -82,8 +84,8 @@ sub main {
         }
         push(@routines, $allroutines{quit});
 
-        if (exists($user{name})) {
-            print "Selected User:  $user{name} => $user{comment}\n";
+        if (exists($data{user})) {
+            print "Selected User:  $data{user}->{name} => $data{user}->{comment}\n";
             print "------------------------------------------------------------------\n\n";
         } else {
             print "No user selected!  Please create or select a user to proceed\n";
@@ -108,18 +110,24 @@ sub main {
             # options are listed starting at 1, but list is 0-indexed
             $opt--;
 
-            # If user is not needed, proceed, otherwise check for user
-            if ((!$routines[$opt]->{needsUser}) || exists($user{name}))
+            my $routine = $routines[$opt];
+
+            # If any needs are not met, do not continue with routine
+            if (exists($routine->{needs}))
             {
-                # execute code reference
-                dispatch($routines[$opt]->{routine}, \%user, $config);
+                for my $need (@{$routine->{needs}})
+                {
+                    next if (not exists($data{$need}));
+                }
             }
+
+            dispatch($routine->{routine}, \%data, $config);
         }
     }
 }
 
 sub dispatch {
-    my ($function, $user, $config) = @_;
+    my ($function, $data, $config) = @_;
     my %dispatch = (
         change_account_detail => {AIX => \&change_account_detail_aix, Linux => \&change_account_detail_linux},
         change_account_expire => {Linux => \&change_account_expire_linux},
@@ -130,6 +138,7 @@ sub dispatch {
         reset_password => {AIX => \&reset_password_aix, Linux => \&reset_password_linux},
         select_user => {DEFAULT => \&select_user},
         unlock_account => {AIX => \&unlock_account_aix, Linux => \&unlock_account_linux},
+        unselect_user => {DEFAULT => \&unselect_user},
         view_account_detail => {AIX => \&view_account_detail_aix, Linux => \&view_account_detail_linux},
         view_all_users => {DEFAULT => \&view_all_users},
         quit => {DEFAULT => \&quit},
@@ -141,10 +150,10 @@ sub dispatch {
     {
         if (exists($dispatch{$function}->{$os}))
         {
-            $dispatch{$function}->{$os}->($user, $config);
+            $dispatch{$function}->{$os}->($data, $config);
         } elsif (exists($dispatch{$function}->{DEFAULT}))
         {
-            $dispatch{$function}->{DEFAULT}->($user, $config);
+            $dispatch{$function}->{DEFAULT}->($data, $config);
         } else
         {
             print("There is no $function function for OS $config->{OS}, this is a bug in the program or deployment.\n");
@@ -331,7 +340,7 @@ sub get_users_linux {
 }
 
 sub select_user {
-    my ($user, $config) = @_;
+    my ($data, $config) = @_;
     print "\nEnter username or search string: ";
     my $search = <>;
     chomp($search);
@@ -362,6 +371,9 @@ sub select_user {
         my $usr_index = <>;
         chomp $usr_index;
         my $match = $matches[$usr_index];
+        my $user = {};
+        $data->{user} = $user;
+
         $user->{name} = $match->{name};
         $user->{comment} = $match->{comment};
         $user->{pgrp} = getgrgid($match->{gid});
@@ -385,7 +397,7 @@ sub select_user {
 }
 
 sub view_all_users {
-    my ($user, $config) = @_;
+    my ($data, $config) = @_;
 
     my @users;
 
@@ -461,7 +473,8 @@ sub view_all_users {
 }
 
 sub view_account_detail_aix {
-    my ($user, $config) = @_;
+    my ($data, $config) = @_;
+    my $user = $data->{user};
     my @lsuser = split(/ /,`sudo lsuser $user->{name}`);
     my %userdetail;
     foreach my $user (@lsuser) {
@@ -487,7 +500,8 @@ sub view_account_detail_aix {
 }
 
 sub view_account_detail_linux {
-    my ($user, $config) = @_;
+    my ($data, $config) = @_;
+    my $user = $data->{user};
     system("clear");
     print "username:    $user->{name}\n";
     print "pgroup:      $user->{pgrp}\n";
@@ -506,7 +520,8 @@ sub view_account_detail_linux {
 }
 
 sub change_account_detail_aix {
-    my ($user, $config) = @_;
+    my ($data, $config) = @_;
+    my $user = $data->{user};
     system("clear");
 
     my @lsuser = split(/ /,`sudo lsuser $user->{name}`);
@@ -558,7 +573,8 @@ sub change_account_detail_aix {
 }
 
 sub change_account_detail_linux {
-    my ($user, $config) = @_;
+    my ($data, $config) = @_;
+    my $user = $data->{user};
     system("clear");
 
     my $correct = "N";
@@ -610,7 +626,8 @@ sub change_account_detail_linux {
 }
 
 sub change_account_expire_linux {
-    my ($user, $config) = @_;
+    my ($data, $config) = @_;
+    my $user = $data->{user};
     system("clear");
 
     my $correct = "N";
@@ -647,7 +664,8 @@ sub change_account_expire_linux {
 }
 
 sub reset_password_aix {
-    my ($user, $config) = @_;
+    my ($data, $config) = @_;
+    my $user = $data->{user};
     print "Resetting account: $user->{name} for " . (split(/,/, $user->{comment}))[0] . "\n";
     system("sudo passwd $user->{name}");
     print "\nForce password change? (Y|N):";
@@ -659,7 +677,8 @@ sub reset_password_aix {
 }
 
 sub unlock_account_aix {
-    my ($user, $config) = @_;
+    my ($data, $config) = @_;
+    my $user = $data->{user};
     print "Unlocking account: $user->{name} for " . (split(/,/, $user->{comment}))[0] . "\n";
     system("sudo chuser unsuccessful_login_count=0 account_locked=false $user->{name}");
     print "\nUser Successfully Unlocked!\n";
@@ -667,14 +686,16 @@ sub unlock_account_aix {
     my $v = <>;
 }
 sub reset_password_linux {
-    my ($user, $config) = @_;
+    my ($data, $config) = @_;
+    my $user = $data->{user};
     print "Resetting account: $user->{name} for $user->{comment}\n";
     system("sudo passwd $user->{name}");
     unlock_account_linux(@_);
 }
 
 sub unlock_account_linux {
-    my ($user, $config) = @_;
+    my ($data, $config) = @_;
+    my $user = $data->{user};
     print "Unlocking account: $user->{name} for $user->{comment}\n";
     system("sudo passwd -u $user->{name}");
     system("sudo chage -d " . localtime->strftime('%F') . " $user->{name}");
@@ -684,7 +705,7 @@ sub unlock_account_linux {
 }
 
 sub create_user_account {
-    my ($user, $config) = @_;
+    my ($data, $config) = @_;
     system("clear");
     my $correct = "N";
     my ($username, $fullname, $phone, $location, $business);
@@ -744,7 +765,7 @@ sub create_user_account {
 }
 
 sub create_admin_account {
-    my ($user, $config) = @_;
+    my ($data, $config) = @_;
     system("clear");
     my $correct = "N";
     my ($username, $fullname, $phone, $location, $business);
@@ -804,7 +825,7 @@ sub create_admin_account {
 }
 
 sub create_sftp_account_linux {
-    my ($user, $config) = @_;
+    my ($data, $config) = @_;
     system("clear");
     my $correct = "N";
     my ($username, $fullname, $phone, $location, $business);
@@ -889,7 +910,8 @@ sub create_sftp_account_linux {
 }
 
 sub delete_account {
-    my ($user, $config) = @_;
+    my ($data, $config) = @_;
+    my $user = $data->{user};
     system("clear");
     print "##################################################################\n";
     print "ABOUT TO REMOVE USER ACCCOUNT!!!\n";
@@ -900,12 +922,21 @@ sub delete_account {
     if ($con eq "Y") {
         system("sudo userdel $user->{name}");
         print "\n\nUser: $user->{name} removed from $config->{OS}.\n";
-        %{$user} = ();
+        delete($data->{user});
     }
     else {
         print "\n\nYou did not enter Y, returning to main menu without removing user.\n";
     }
     print "\nPress enter to continue ";
+    my $ret = <>;
+}
+
+sub unselect_user {
+    my ($data, $config) = @_;
+    my $username = $data->{user}->{name};
+    delete($data->{user});
+    print("Unselected user $username\n");
+    print("\nPress enter to continue ");
     my $ret = <>;
 }
 
@@ -932,6 +963,6 @@ sub parsestanzas {
 }
 
 sub quit {
-    my ($user, $config) = @_;
+    my ($data, $config) = @_;
     $config->{exit} = 1;
 }
