@@ -2,6 +2,7 @@
 use warnings;
 use strict;
 use Time::Piece;
+use POSIX;
 use JSON;
 
 sub ParseConfig($);
@@ -56,14 +57,14 @@ sub main {
     my %allroutines = (
         change_account_detail => 'Change User Account Details',
         change_account_expire => 'Change User Account Password Expiry',
-        create_admin_account => 'Create Admin account',
-        create_sftp_account => 'Create client account',
-        create_user_account => 'Create User account',
-        delete_account => 'Remove user account',
+        create_admin_account => 'Create Admin Account',
+        create_sftp_account => 'Create Client Account',
+        create_user_account => 'Create User Account',
+        delete_account => 'Remove User Account',
         quit => 'Exit',
-        reset_password => 'Reset password and unlock account',
+        reset_password => 'Reset Password and Unlock Account',
         select_user => 'Select User',
-        unlock_account => 'Unlock account without resetting password',
+        unlock_account => 'Unlock Account Without Resetting Password',
         unselect_user => 'Unselect User',
         view_account_detail => 'View User Account Details',
         view_all_users => 'View All Users'
@@ -424,7 +425,7 @@ sub view_all_users {
 
     @users = get_users($config);
 
-    my @sortoptions = (['name', 'User Name'], ['comment', 'Comment Field'], ['lastchange', 'Last Password Change'], ['expirationdate', 'Days until expiration'], ['uid', 'User ID'], ['pgrp', 'Primary Group'], ['maxage', 'Max Password Age']);
+    my @sortoptions = (['name', 'User Name'], ['comment', 'Comment Field'], ['lastchange', 'Last Password Change'], ['expirationdate', 'Days Until Expiration'], ['uid', 'User ID'], ['pgrp', 'Primary Group'], ['maxage', 'Max Password Age']);
     my $option;
     while ((!defined($option)) or (length($option) == 0) or (($option < 0) or ($option > $#sortoptions)))
     {
@@ -514,8 +515,8 @@ sub view_account_detail_aix {
     printf("%-40s%s\n", 'login:', $userdetail{'login'});
     printf("%-40s%s\n", 'account locked:', $userdetail{'account_locked'});
     printf("%-40s%s\n", 'unsuccessful login count:', defined($userdetail{'unsuccessful_login_count'}) ? $userdetail{'unsuccessful_login_count'} : 0);
-    printf("%-40s%s\n", 'last successful login:', localtime($userdetail{'time_last_login'}));
-    printf("%-40s%s\n", 'last unsuccessful login:', localtime($userdetail{'time_lastunsuccessful_login'}));
+    printf("%-40s%s\n", 'last successful login:', defined($userdetail{'time_last_login'}) ? strftime('%F %T', localtime($userdetail{'time_last_login'})) : 'never');
+    printf("%-40s%s\n", 'last unsuccessful login:', defined($userdetail{'time_last_unsuccessful_login'}) ? strftime('%F %T', localtime($userdetail{'time_last_unsuccessful_login'})) : 'never');
 
     print("\nPress Enter to Continue\n");
     my $v = <>;
