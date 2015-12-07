@@ -2,8 +2,6 @@
 use warnings;
 use strict;
 use Time::Piece;
-use Term::Menus;
-use Data::Dumper;
 use JSON;
 
 sub ParseConfig($);
@@ -50,12 +48,10 @@ sub ParseConfig($) {
     return decode_json($json);
 }
 
-my %data;
-my $config;
-
 sub main {
-    $config = ParseConfig('/etc/manage_users.json');
+    my $config = ParseConfig('/etc/manage_users.json');
     $config->{exit} = 0;
+    my %data;
 
     my %allroutines = (
         change_account_detail => 'Change User Account Details',
@@ -72,44 +68,61 @@ sub main {
         view_account_detail => 'View User Account Details',
         view_all_users => 'View All Users'
     );
-
-    my %menu = (
-        Name => 'Menu',
-        Select => 'One',
-        Display => 25
-    );
-
-    my $count = 1;
-    for my $item (@{$config->{menu}})
-    {
-        if (exists($allroutines{$item}))
-        {
-            $menu{"Item_$count"} = { Text => $allroutines{$item}, Result => "&dispatch('$item')" };
-            $count++;
-        } else
-        {
-            $menu{"Item_$count"} = { Text => "Could not find requested routine $item!  You are missing functionality!", Result => "&dispatch('$item')" };
-            $count++;
-        }
-    }
-    $menu{"Item_$count"} = { Text => $allroutines{quit}, Result => "&dispatch('quit')" } ;
-
     while (!$config->{exit})
     {
+        clear();
+        my @routines;
+
+        for my $item (@{$config->{menu}})
+        {
+            if (exists($allroutines{$item}))
+            {
+                push(@routines, $item);
+            } else
+            {
+                print("Could not find requested routine $item!  You are missing functionality!\n");
+            }
+        }
+        push(@routines, 'quit');
+
+        clear();
+
         if (exists($data{user})) {
-            $menu{Banner} = "Selected User:  $data{user}->{name} => $data{user}->{comment}";
+            print "Selected User:  $data{user}->{name} => $data{user}->{comment}\n";
+            print "------------------------------------------------------------------\n\n";
         } else {
-            $menu{Banner} = "No user selected!  Please create or select a user to proceed";
+            print "No user selected!  Please create or select a user to proceed\n";
+            print "------------------------------------------------------------------\n\n";
         }
 
-        my $result = &Menu(\%menu);
+        # print routines
+        for (my $i = 0; $i < scalar(@routines); $i++)
+        {
+            my $routine = $routines[$i];
+            print(($i + 1) . ") " . $allroutines{$routine} . "\n");
+        }
 
-        $config->{exit} = 1 if ($result eq ']quit[');
+        print "------------------------------------------------------------------\n\n";
+        print "Select Option(default: 1): ";
+
+        my $opt = <>;
+        chomp $opt;
+
+        # if (input is a digit) && (input is > 1) && (input does not exceed list length)
+        if (($opt =~ m/^\d+$/) && ($opt > 0) && ($opt <= scalar(@routines)))
+        {
+            # options are listed starting at 1, but list is 0-indexed
+            $opt--;
+
+            my $routine = $routines[$opt];
+
+            dispatch($routine, \%data, $config);
+        }
     }
 }
 
 sub dispatch {
-    my ($function) = @_;
+    my ($function, $data, $config) = @_;
     my %dispatch = (
         change_account_detail => {AIX => \&change_account_detail_aix, Linux => \&change_account_detail_linux},
         change_account_expire => {Linux => \&change_account_expire_linux},
@@ -143,15 +156,15 @@ sub dispatch {
         {
             for my $need (@{$needs{$function}})
             {
-                return if (not exists($data{$need}));
+                return if (not exists($data->{$need}));
             }
         }
         if (exists($dispatch{$function}->{$os}))
         {
-            $dispatch{$function}->{$os}->(\%data, $config);
+            $dispatch{$function}->{$os}->($data, $config);
         } elsif (exists($dispatch{$function}->{DEFAULT}))
         {
-            $dispatch{$function}->{DEFAULT}->(\%data, $config);
+            $dispatch{$function}->{DEFAULT}->($data, $config);
         }
     }
 }
@@ -375,15 +388,12 @@ sub select_user {
         {
             my $match = $matches[$i];
 
-            my $userstring = sprintf('%-16s%s', $match->{name}, $match->{comment});
-            push(@{$menu{Item_1}->{Convey}}, $userstring);
-            $backsearch{$userstring} = $match;
+            print "$i) $match->{name}\t$match->{comment}\n";
         }
-        my $selection = &Menu(\%menu);
-        return if ($selection eq ']quit[');
-
-        my $user = $backsearch{$selection};
-
+        print "Select user index: ";
+        my $usr_index = <>;
+        chomp $usr_index;
+        my $user = $matches[$usr_index];
         $data->{user} = $user;
 
         $user->{pgrp} = getgrgid($user->{gid});
@@ -392,6 +402,7 @@ sub select_user {
         while (my ($name, $passwd, $gid, $members) = getgrent())
         {
             my $username = $user->{name};
+
             if (grep(/^$username$/, split(' ', $members)))
             {
                 push(@{$user->{groups}}, $name);
@@ -413,28 +424,21 @@ sub view_all_users {
 
     @users = get_users($config);
 
-    my %sortoptions = ('User Name' => 'name',  'Comment Field' => 'comment',  'Last Password Change' => 'lastchange',  'Days until expiration' => 'expirationdate',  'User ID' => 'uid',  'Primary Group' => 'pgrp',  'Max Password Age' => 'maxage');
-    my %sortmenu = (
-        Name => 'Menu',
-        Select => 'One',
-        Banner => 'Select sort field',
-        Display => 25,
-        Item_1 => {
-            Text => ']Convey[',
-            Convey => []
-        },
-    );
-    for my $option (keys(%sortoptions))
+    my @sortoptions = (['name', 'User Name'], ['comment', 'Comment Field'], ['lastchange', 'Last Password Change'], ['expirationdate', 'Days until expiration'], ['uid', 'User ID'], ['pgrp', 'Primary Group'], ['maxage', 'Max Password Age']);
+    my $option;
+    while ((!defined($option)) or (length($option) == 0) or (($option < 0) or ($option > $#sortoptions)))
     {
-        push(@{$sortmenu{Item_1}->{Convey}}, $option);
+        clear();
+        for my $i (0..$#sortoptions)
+        {
+            print("$i) $sortoptions[$i]->[1]\n");
+        }
+        print("Select sort field: ");
+        $option = <>;
+        chomp($option);
     }
-    my $option = &Menu(\%sortmenu);
-
-    return if ($option eq ']quit[');
-
-    my $sort = $sortoptions{$option};
-    my $sortdesc = $option;
-
+    my $sort = $sortoptions[$option]->[0];
+    my $sortdesc = $sortoptions[$option]->[1];
     my @susers = sort {
             if (((!exists($a->{$sort})) or (length($a->{$sort}) == 0)) and ((!exists($b->{$sort})) or (length($b->{$sort}) == 0)))
             {
@@ -457,32 +461,19 @@ sub view_all_users {
             }
         } @users;
 
-    $option = &Menu({
-        Name => 'Menu',
-        Select => 'One',
-        Banner => 'Would you like to reverse the sort?',
-        Display => 25,
-        Item_1 => {
-            Text => ']Convey[',
-            Convey => [qw(yes no)]
-        },
-    });
-
-    if ($option eq 'yes')
+    $option = undef;
+    print("Would you like to reverse the sort? <y/n>: ");
+    $option = <>;
+    chomp($option);
+    if ($option =~ m/^y/i)
     {
         @susers = reverse(@susers);
     }
 
-    my %menu = (
-        Name => 'Menu',
-        Select => 'One',
-        Banner => sprintf('%14s%15.15s %25.25s %25.25s', '', 'Username', 'Comment', $sortdesc),
-        Display => 25,
-        Item_1 => {
-            Text => ']Convey[',
-            Convey => []
-        },
-    );
+    clear();
+
+    printf("%15.15s %25.25s %25.25s\n", 'Username', 'Comment', $sortdesc);
+    printf("%15.15s %25.25s %25.25s\n", '--------', '-------', '-' x length($sortdesc));
 
     # Current date in days since the epoch
     my $date = int(time/86400);
@@ -492,10 +483,14 @@ sub view_all_users {
         $hash{lastchange} = ((length($user->{lastchange}) > 0) ? sprintf('%.2f days ago', $date - $user->{lastchange}) : 'N/A');
         $hash{expirationdate} = ((length($user->{expirationdate}) > 0) ? sprintf('%.2f', $date - $user->{expirationdate}) : 'Never');
         $hash{maxage} = ((length($user->{maxage}) > 0) ? $user->{maxage} : 'None');
-        push(@{$menu{Item_1}->{Convey}}, sprintf("%15.15s %25.25s %25.25s", $hash{name}, $hash{comment}, $hash{$sort}));
+        printf("%15.15s %25.25s %25.25s\n", $hash{name}, $hash{comment}, $hash{$sort});
     }
-    &Menu(\%menu);
-    return 0;
+
+    printf("%15.15s %25.25s %25.25s\n", '--------', '-------', '-' x length($sortdesc));
+    printf("%15.15s %25.25s %25.25s\n", 'Username', 'Comment', $sortdesc);
+
+    print "\n\nPress enter to continue";
+    my $ret = <>;
 }
 
 sub view_account_detail_aix {
@@ -510,6 +505,7 @@ sub view_account_detail_aix {
             $userdetail{$el[0]} = $el[1];
         }
     }
+    clear();
     printf("%-40s%s\n", 'username:', $user->{name});
     printf("%-40s%s\n", 'primary group:', $userdetail{'pgrp'});
     printf("%-40s%s\n", 'groups:', $userdetail{'groups'});
@@ -530,6 +526,7 @@ sub view_account_detail_aix {
 sub view_account_detail_linux {
     my ($data, $config) = @_;
     my $user = $data->{user};
+    clear();
     printf("%-20s%s\n", 'username:', $user->{name});
     printf("%-20s%s\n", 'pgroup:', $user->{pgrp});
     printf("%-20s%s\n", 'groups:', join(', ', @{$user->{groups}}));
@@ -565,9 +562,9 @@ sub change_account_detail_aix {
 
     my %details;
 
-    my $correct;
+    my $correct = "N";
 
-    do { 
+    while ( $correct !~ /[Yy]/ ) {
         %details = %userdetail;
         my $input;
         print "Modify account $username:\n";
@@ -584,34 +581,19 @@ sub change_account_detail_aix {
         print "home [$details{home}]:\n";
         $input = <>;  chomp $input;
         $details{home} = $input if ($input ne "");
-
-        my $banner = '-' x 60;
-        $banner .= "\n";
-        $banner .= sprintf("%-26s%s\n", 'username:', $username);
-        $banner .= sprintf("%-26s%s\n", 'primary group:', $details{'pgrp'});
-        $banner .= sprintf("%-26s%s\n", 'groups:', $details{'groups'});
-        $banner .= sprintf("%-26s%s\n", 'shell:', $details{'shell'});
-        $banner .= sprintf("%-26s%s\n", 'home:', $details{'home'});
-        $banner .= '-' x 60;
-        $banner .= "\n";
-        $banner .= "Is this correct?";
-        $correct = &Menu({
-            Name => 'Menu',
-            Select => 'One',
-            Banner => $banner,
-            Display => 25,
-            Item_1 => {
-                Text => ']Convey[',
-                Convey => [qw(yes no)]
-            },
-        });
-
-        return if ($correct eq ']quit[');
-    } while ($correct ne 'yes');
-    system("chuser 'pgrp=$details{pgrp}' 'groups=$details{groups}' 'shell=$details{shell}' 'home=$details{home}' $username");
+        print "-----------------------------------------------------------\n\n";
+        print "username:                 $username\n";
+        print "primary group:            $details{'pgrp'}\n";
+        print "groups:                   $details{'groups'}\n";
+        print "shell:                    $details{'shell'}\n";
+        print "home:                     $details{'home'}\n";
+        print "-----------------------------------------------------------\n\n";
+        print "Is this correct? (Y|N) ";
+        $correct = <>;  chomp $correct;
+    }  
+    system("sudo chuser 'pgrp=$details{pgrp}' 'groups=$details{groups}' 'shell=$details{shell}' 'home=$details{home}' $username");
 
     view_account_detail_aix(@_);
-    return;
 }
 
 sub change_account_detail_linux {
@@ -619,11 +601,11 @@ sub change_account_detail_linux {
     my $user = $data->{user};
     clear();
 
+    my $correct = "N";
+
     my %details;
 
-    my $correct;
-
-    do {
+    while ( $correct !~ /[Yy]/ ) {
         %details = %{$user};
         $details{groups} = join(',', @{$user->{groups}});
 
@@ -645,30 +627,17 @@ sub change_account_detail_linux {
         print "home [$details{home}]:";
         $input = <>;  chomp $input;
         $details{home} = $input if ($input ne "");
-
-        my $banner = '-' x 60;
-        $banner .= "\n";
-        $banner .= sprintf("%-26s%s\n", 'username:', $details{name});
-        $banner .= sprintf("%-26s%s\n", 'details:', $details{comment});
-        $banner .= sprintf("%-26s%s\n", 'primary group:', $details{pgrp});
-        $banner .= sprintf("%-26s%s\n", 'groups:', $details{groups});
-        $banner .= sprintf("%-26s%s\n", 'shell:', $details{shell});
-        $banner .= sprintf("%-26s%s\n", 'home:', $details{home});
-        $banner .= '-' x 60;
-        $banner .= "\n";
-        $banner .= "Is this correct?";
-        $correct = &Menu({
-            Name => 'Menu',
-            Select => 'One',
-            Banner => $banner,
-            Display => 25,
-            Item_1 => {
-                Text => ']Convey[',
-                Convey => [qw(yes no)]
-            },
-        });
-        return if ($correct eq ']quit[');
-    } while ($correct ne 'yes');
+        print "-----------------------------------------------------------\n\n";
+        print "username:                 $details{name}\n";
+        print "details:                  $details{comment}\n";
+        print "primary group:            $details{pgrp}\n";
+        print "groups:                   $details{groups}\n";
+        print "shell:                    $details{shell}\n";
+        print "home:                     $details{home}\n";
+        print "-----------------------------------------------------------\n\n";
+        print "Is this correct? (Y|N) ";
+        $correct = <>;  chomp $correct;
+    }
     system("usermod -c '$details{comment}' -d '$details{home}' -s '$details{shell}' -g '$details{pgrp}' -G '$details{groups}' $details{name}");
 
     $user->{comment} = $details{comment};
@@ -685,11 +654,11 @@ sub change_account_expire_linux {
     my ($data, $config) = @_;
     my $user = $data->{user};
 
-    my $correct = 'no';
+    my $correct = 'N';
 
     my @opts;
 
-    do {
+    while ( $correct !~ /[Yy]/ ) {
         clear();
 
         @opts = ($user->{name});
@@ -725,21 +694,11 @@ sub change_account_expire_linux {
         $banner .= sprintf("%-50s%s\n", 'days to warn:', $input) if ($input ne "");
 
         $banner .= "\n";
-        $banner .= "Is this correct?";
 
-        $correct = &Menu({
-            Name => 'Menu',
-            Select => 'One',
-            Banner => $banner,
-            Display => 25,
-            Item_1 => {
-                Text => ']Convey[',
-                Convey => [qw(yes no)]
-            },
-        });
-
-        return if ($correct eq ']quit[');
-    } while ( $correct ne 'yes' );
+        print($banner);
+        print("Is this correct? (Y|N) ");
+        $correct = <>;  chomp $correct;
+    }
     system('chage ' . buildopts(\@opts));
 
     view_account_detail_linux(@_);
@@ -751,23 +710,12 @@ sub reset_password_aix {
     my $user = $data->{user};
     print "Resetting account: $user->{name} for " . (split(/,/, $user->{comment}))[0] . "\n";
     system("passwd $user->{name}");
-
-    my $chpw = &Menu({
-        Name => 'Menu',
-        Select => 'One',
-        Banner => 'Force password change?',
-        Display => 25,
-        Item_1 => {
-            Text => ']Convey[',
-            Convey => [qw(yes no)]
-        },
-    });
-
-    if ($chpw ne 'yes') {
-        system("pwdadm -c $user->{name}");
+    print "\nForce password change? (Y|N):";
+    my $chpw = <>; chomp $chpw;
+    if ($chpw =~ /[Nn]/) {
+        system("sudo pwdadm -c $user->{name}");
     }
     unlock_account_aix(@_);
-    return;
 }
 
 sub unlock_account_aix {
@@ -795,18 +743,17 @@ sub unlock_account_linux {
     print "Unlocking account: $user->{name} for $user->{comment}\n";
     system("passwd -u $user->{name}");
     system("chage -d " . localtime->strftime('%F') . " $user->{name}");
-    print "\nUser Successfully Unlocked!\n";
-    print "\nPress Enter to Continue\n";
+    print("\nUser Successfully Unlocked!\n");
+    print("\nPress Enter to Continue\n");
     my $v = <>;
     return;
 }
 
 sub create_user_account {
     my ($data, $config) = @_;
-    my $correct = "no";
+    my $correct = "N";
     my ($username, $fullname, $phone, $location, $business);
-
-    do {
+    while ( $correct !~ /[Yy]/ ) {
         clear();
         print "Create new account:\n";
         print "-----------------------------------------------------------\n\n";
@@ -820,31 +767,20 @@ sub create_user_account {
         $location = <>; chomp $location;
         print "Enter Business Unit: ";
         $business = <>; chomp $business;
-        my $banner = '-' x 60;
-        $banner .= "\n";
-        $banner .= "Please confim user details:\n";
-        $banner .= sprintf("%-26s%s\n", 'Username:', $username);
-        $banner .= sprintf("%-26s%s\n", 'Fullname:', $fullname);
-        $banner .= sprintf("%-26s%s\n", 'Phone:', $phone);
-        $banner .= sprintf("%-26s%s\n", 'Location:', $location);
-        $banner .= sprintf("%-26s%s\n", 'Business:', $business);
-        $banner .= '-' x 60;
-        $banner .= "\n";
-        $banner .= "Is this correct?";
-        $correct = &Menu({
-            Name => 'Menu',
-            Select => 'One',
-            Banner => $banner,
-            Display => 25,
-            Item_1 => {
-                Text => ']Convey[',
-                Convey => [qw(yes no)]
-            },
-        });
-        return if ($correct eq ']quit[');
-
-    } while ($correct ne 'yes');
-    print("Creating account $username for $fullname ...\n");
+        print "\n\n-----------------------------------------------------------\n\n";
+        print "Please confim user details:\n";
+        print "-----------------------------------------------------------\n\n";
+        print "Username:  $username\n";
+        print "Fullname:  $fullname\n";
+        print "Phone:     $phone\n";
+        print "Location:  $location\n";
+        print "Business:  $business\n";
+        print "-----------------------------------------------------------\n\n";
+        print "Is this correct? (Y|N) ";
+        $correct = <>;  chomp $correct;
+    }  
+    clear();
+    print "Creating account $username for $fullname ...\n";
 
     my @opts;
     if ($config->{user}->{sharedhome})
@@ -878,7 +814,7 @@ sub create_admin_account {
     clear();
     my $correct = "N";
     my ($username, $fullname, $phone, $location, $business);
-    do {
+    while ( $correct !~ /[Yy]/ ) {
         print "Create new account:\n";
         print "-----------------------------------------------------------\n\n";
         print "Enter username: ";
@@ -891,30 +827,19 @@ sub create_admin_account {
         $location = <>; chomp $location;
         print "Enter Business Unit: ";
         $business = <>; chomp $business;
-
-        my $banner = '-' x 60;
-        $banner .= "\n";
-        $banner .= "Please confim user details:\n";
-        $banner .= sprintf("%-26s%s\n", 'Username:', $username);
-        $banner .= sprintf("%-26s%s\n", 'Fullname:', $fullname);
-        $banner .= sprintf("%-26s%s\n", 'Phone:', $phone);
-        $banner .= sprintf("%-26s%s\n", 'Location:', $location);
-        $banner .= sprintf("%-26s%s\n", 'Business:', $business);
-        $banner .= '-' x 60;
-        $banner .= "\n";
-        $banner .= "Is this correct?";
-        $correct = &Menu({
-            Name => 'Menu',
-            Select => 'One',
-            Banner => $banner,
-            Display => 25,
-            Item_1 => {
-                Text => ']Convey[',
-                Convey => [qw(yes no)]
-            },
-        });
-        return if ($correct eq ']quit[');
-    } while ($correct ne 'yes');
+        print "\n\n-----------------------------------------------------------\n\n";
+        print "Please confim user details:\n";
+        print "-----------------------------------------------------------\n\n";
+        print "Username:  $username\n";
+        print "Fullname:  $fullname\n";
+        print "Phone:     $phone\n";
+        print "Location:  $location\n";
+        print "Business:  $business\n";
+        print "-----------------------------------------------------------\n\n";
+        print "Is this correct? (Y|N) ";
+        $correct = <>;  chomp $correct;
+    }  
+    clear();
     print "Creating account $username for $fullname ...\n";
 
     my @opts;
@@ -949,7 +874,7 @@ sub create_sftp_account_linux {
     clear();
     my $correct = "N";
     my ($username, $fullname, $phone, $location, $business);
-    do {
+    while ( $correct !~ /[Yy]/ ) {
         print "Create new SFTP account:\n";
         print "-----------------------------------------------------------\n\n";
         print "Enter username: ";
@@ -962,30 +887,19 @@ sub create_sftp_account_linux {
         $location = <>; chomp $location;
         print "Enter Business Unit: ";
         $business = <>; chomp $business;
-
-        my $banner = '-' x 60;
-        $banner .= "\n";
-        $banner .= "Please confim user details:\n";
-        $banner .= sprintf("%-26s%s\n", 'Username:', $username);
-        $banner .= sprintf("%-26s%s\n", 'Fullname:', $fullname);
-        $banner .= sprintf("%-26s%s\n", 'Phone:', $phone);
-        $banner .= sprintf("%-26s%s\n", 'Location:', $location);
-        $banner .= sprintf("%-26s%s\n", 'Business:', $business);
-        $banner .= '-' x 60;
-        $banner .= "\n";
-        $banner .= "Is this correct?";
-        $correct = &Menu({
-            Name => 'Menu',
-            Select => 'One',
-            Banner => $banner,
-            Display => 25,
-            Item_1 => {
-                Text => ']Convey[',
-                Convey => [qw(yes no)]
-            },
-        });
-        return if ($correct eq ']quit[');
-    } while ($correct ne 'yes');
+        print "\n\n-----------------------------------------------------------\n\n";
+        print "Please confim user details:\n";
+        print "-----------------------------------------------------------\n\n";
+        print "Username:  $username\n";
+        print "Fullname:  $fullname\n";
+        print "Phone:     $phone\n";
+        print "Location:  $location\n";
+        print "Business:  $business\n";
+        print "-----------------------------------------------------------\n\n";
+        print "Is this correct? (Y|N) ";
+        $correct = <>;  chomp $correct;
+    }  
+    clear();
     print "Creating SFTP account $username for $fullname ...\n";
 
     my @opts;
@@ -1044,28 +958,19 @@ sub delete_account {
     my ($data, $config) = @_;
     my $user = $data->{user};
     clear();
-    my $banner = "##################################################################\n";
-    $banner .= "ABOUT TO REMOVE USER ACCCOUNT!!!\n";
-    $banner .= "##################################################################\n\n";
+    print "##################################################################\n";
+    print "ABOUT TO REMOVE USER ACCCOUNT!!!\n";
+    print "##################################################################\n\n";
 
-    $banner .= "Are you sure you want to delete user $user->{name}?";
-    my $con = &Menu({
-        Name => 'Menu',
-        Select => 'One',
-        Banner => $banner,
-        Display => 25,
-        Item_1 => {
-            Text => ']Convey[',
-            Convey => [qw(yes no)]
-        },
-    });
-
-    if ($con eq 'yes') {
+    print "Enter Y to confirm account removal for user $user->{name}: ";
+    my $con = <>; chomp $con;
+    if ($con eq "Y") {
         system("userdel $user->{name}");
         print "\n\nUser: $user->{name} removed from $config->{OS}.\n";
         delete($data->{user});
-    } else {
-        print "\n\nYou did not select yes, returning to main menu without removing user.\n";
+    }
+    else {
+        print "\n\nYou did not enter Y, returning to main menu without removing user.\n";
     }
     print "\nPress enter to continue ";
     my $ret = <>;
@@ -1085,7 +990,7 @@ sub parsestanzas {
     my %output;
     my $stanza = 'default';
 
-    open(my $file, '-|', "cat $filename");
+    open(my $file, '<', $filename);
     while (my $line = <$file>)
     {
         chomp($line);
@@ -1097,7 +1002,6 @@ sub parsestanzas {
             $output{$stanza}{$1} = $2;
         }
     }
-    close($file);
 
     return %output;
 }
