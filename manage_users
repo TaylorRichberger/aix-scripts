@@ -84,22 +84,12 @@ sub main {
     {
         if (exists($allroutines{$item}))
         {
-<<<<<<< HEAD
             $menu{"Item_$count"} = { Text => $allroutines{$item}, Result => "&dispatch('$item')" };
             $count++;
         } else
         {
             $menu{"Item_$count"} = { Text => "Could not find requested routine $item!  You are missing functionality!", Result => "&dispatch('$item')" };
             $count++;
-=======
-            if (exists($allroutines{$item}))
-            {
-                push(@routines, $allroutines{$item});
-            } else
-            {
-                print("Could not find requested routine $item!  You are missing functionality!!\n");
-            }
->>>>>>> oldmaster
         }
     }
     $menu{"Item_$count"} = { Text => $allroutines{quit}, Result => "&dispatch('quit')" } ;
