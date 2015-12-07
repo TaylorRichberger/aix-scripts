@@ -8,6 +8,7 @@ sub ParseConfig($);
 
 sub main;
 sub dispatch;
+sub clear;
 sub buildopts;
 sub change_account_detail;
 sub change_account_detail_aix;
@@ -41,7 +42,7 @@ sub ParseConfig($) {
     my $location = $_[0];
     my $data;
     local $/ = undef;
-    open(my $file, '<', $location) or return {dir => "/data/IJS", thresholds => []};
+    open(my $file, '<', $location) or return {menu => []};
     binmode $file;
     my $json = <$file>;
     return decode_json($json);
@@ -53,36 +54,38 @@ sub main {
     my %data;
 
     my %allroutines = (
-        change_account_detail => { description => "Change User Account Details", needs => ['user'], routine => 'change_account_detail' },
-        change_account_expire => { description => "Change User Account Password Expiry", needs => ['user'], routine => 'change_account_expire_linux' },
-        create_admin_account => { description => "Create Admin account", routine => 'create_admin_account' },
-        create_sftp_account => { description => "Create client account", routine => 'create_sftp_account_linux' },
-        create_user_account => { description => "Create User account", routine => 'create_user_account' },
-        delete_account => { description => "Remove user account", needs => ['user'], routine => 'delete_account' },
-        quit => { description => "Exit", routine => 'quit' },
-        reset_password => { description => "Reset password and unlock account", needs => ['user'], routine => 'reset_password' },
-        select_user => { description => "Select User", routine => 'select_user' },
-        unlock_account => { description => "Unlock account without resetting password", needs => ['user'], routine => 'unlock_account' },
-        unselect_user => { description => "Unselect User", needs => ['user'], routine => 'unselect_user' },
-        view_account_detail => { description => "View User Account Details", needs => ['user'], routine => 'view_account_detail' },
-        view_all_users => { description => "View All Users", routine => 'view_all_users' }
+        change_account_detail => 'Change User Account Details',
+        change_account_expire => 'Change User Account Password Expiry',
+        create_admin_account => 'Create Admin account',
+        create_sftp_account => 'Create client account',
+        create_user_account => 'Create User account',
+        delete_account => 'Remove user account',
+        quit => 'Exit',
+        reset_password => 'Reset password and unlock account',
+        select_user => 'Select User',
+        unlock_account => 'Unlock account without resetting password',
+        unselect_user => 'Unselect User',
+        view_account_detail => 'View User Account Details',
+        view_all_users => 'View All Users'
     );
     while (!$config->{exit})
     {
-        system("clear");
+        clear();
         my @routines;
 
         for my $item (@{$config->{menu}})
         {
             if (exists($allroutines{$item}))
             {
-                push(@routines, $allroutines{$item});
+                push(@routines, $item);
             } else
             {
                 print("Could not find requested routine $item!  You are missing functionality!\n");
             }
         }
-        push(@routines, $allroutines{quit});
+        push(@routines, 'quit');
+
+        clear();
 
         if (exists($data{user})) {
             print "Selected User:  $data{user}->{name} => $data{user}->{comment}\n";
@@ -95,7 +98,8 @@ sub main {
         # print routines
         for (my $i = 0; $i < scalar(@routines); $i++)
         {
-            print(($i + 1) . ") " . $routines[$i]->{description} . "\n");
+            my $routine = $routines[$i];
+            print(($i + 1) . ") " . $allroutines{$routine} . "\n");
         }
 
         print "------------------------------------------------------------------\n\n";
@@ -112,16 +116,7 @@ sub main {
 
             my $routine = $routines[$opt];
 
-            # If any needs are not met, do not continue with routine
-            if (exists($routine->{needs}))
-            {
-                for my $need (@{$routine->{needs}})
-                {
-                    next if (not exists($data{$need}));
-                }
-            }
-
-            dispatch($routine->{routine}, \%data, $config);
+            dispatch($routine, \%data, $config);
         }
     }
 }
@@ -143,25 +138,39 @@ sub dispatch {
         view_all_users => {DEFAULT => \&view_all_users},
         quit => {DEFAULT => \&quit},
     );
+    my %needs = (
+        change_account_detail => [qw(user)],
+        change_account_expire => [qw(user)],
+        delete_account => [qw(user)],
+        reset_password => [qw(user)],
+        unlock_account => [qw(user)],
+        unselect_user => [qw(user)],
+        view_account_detail => [qw(user)]
+    );
 
     my $os = $config->{OS};
 
     if (exists($dispatch{$function}))
     {
+        if (exists($needs{$function}))
+        {
+            for my $need (@{$needs{$function}})
+            {
+                return if (not exists($data->{$need}));
+            }
+        }
         if (exists($dispatch{$function}->{$os}))
         {
             $dispatch{$function}->{$os}->($data, $config);
         } elsif (exists($dispatch{$function}->{DEFAULT}))
         {
             $dispatch{$function}->{DEFAULT}->($data, $config);
-        } else
-        {
-            print("There is no $function function for OS $config->{OS}, this is a bug in the program or deployment.\n");
         }
-    } else
-    {
-        print("There is no $function function, this is a bug in the program or deployment.\n");
     }
+}
+
+sub clear {
+    print("\n" x 200);
 }
 
 sub buildopts {
@@ -233,6 +242,7 @@ sub get_users_aix {
     {
         my %user;
         ($user{name}, $user{password}, $user{uid}, $user{gid}, $user{quota}, $user{comment}, $user{gcos}, $user{home}, $user{shell}, $user{expire}) = @pw;
+        $user{comment} ||= $user{gcos};
 
         $user{pgrp} = (getgrgid($user{gid}))[0];
         $user{groups} = [];
@@ -248,7 +258,6 @@ sub get_users_aix {
             $user{lastchange} = '';
         }
 
-        #$user{maxage} = `sudo lssec -f /etc/security/user -s $user{name} -a maxage`;
         if (defined($secuser{$user{name}}) && defined($secuser{$user{name}}{maxage}) && ($secuser{$user{name}}{maxage} =~ m/^\d+$/))
         {
             $user{maxage} = $secuser{$user{name}}{maxage};
@@ -290,7 +299,7 @@ sub get_users_linux {
     my @users;
     my %userrefs;
 
-    my @shadowLines = split(/\n/, `sudo cat /etc/shadow`);
+    my @shadowLines = split(/\n/, `cat /etc/shadow`);
     chomp(@shadowLines);
 
     setpwent();
@@ -298,6 +307,7 @@ sub get_users_linux {
     {
         my %user;
         ($user{name}, $user{password}, $user{uid}, $user{gid}, $user{quota}, $user{comment}, $user{gcos}, $user{home}, $user{shell}, $user{expire}) = @pw;
+        $user{comment} ||= $user{gcos};
 
         $user{pgrp} = (getgrgid($user{gid}))[0];
         $user{groups} = [];
@@ -357,10 +367,23 @@ sub select_user {
         }
     }
     endpwent();
-    system("clear");
+    clear();
 
     if (scalar(@matches) > 0)
     {
+        my %menu = (
+            Name => 'Menu',
+            Select => 'One',
+            Banner => 'Choose a user',
+            Display => 25,
+            Item_1 => {
+                Text => ']Convey[',
+                Convey => []
+            },
+        );
+
+        my %backsearch;
+
         for (my $i = 0; $i < scalar(@matches); ++$i)
         {
             my $match = $matches[$i];
@@ -370,18 +393,16 @@ sub select_user {
         print "Select user index: ";
         my $usr_index = <>;
         chomp $usr_index;
-        my $match = $matches[$usr_index];
-        my $user = {};
+        my $user = $matches[$usr_index];
         $data->{user} = $user;
 
-        $user->{name} = $match->{name};
-        $user->{comment} = $match->{comment};
-        $user->{pgrp} = getgrgid($match->{gid});
+        $user->{pgrp} = getgrgid($user->{gid});
         $user->{groups} = [];
         setgrent();
         while (my ($name, $passwd, $gid, $members) = getgrent())
         {
-            my $username = $match->{name};
+            my $username = $user->{name};
+
             if (grep(/^$username$/, split(' ', $members)))
             {
                 push(@{$user->{groups}}, $name);
@@ -407,7 +428,7 @@ sub view_all_users {
     my $option;
     while ((!defined($option)) or (length($option) == 0) or (($option < 0) or ($option > $#sortoptions)))
     {
-        system("clear");
+        clear();
         for my $i (0..$#sortoptions)
         {
             print("$i) $sortoptions[$i]->[1]\n");
@@ -449,7 +470,7 @@ sub view_all_users {
         @susers = reverse(@susers);
     }
 
-    system("clear");
+    clear();
 
     printf("%15.15s %25.25s %25.25s\n", 'Username', 'Comment', $sortdesc);
     printf("%15.15s %25.25s %25.25s\n", '--------', '-------', '-' x length($sortdesc));
@@ -475,7 +496,7 @@ sub view_all_users {
 sub view_account_detail_aix {
     my ($data, $config) = @_;
     my $user = $data->{user};
-    my @lsuser = split(/ /,`sudo lsuser $user->{name}`);
+    my @lsuser = split(/ /,`lsuser $user->{name}`);
     my %userdetail;
     foreach my $user (@lsuser) {
         chomp;
@@ -484,47 +505,50 @@ sub view_account_detail_aix {
             $userdetail{$el[0]} = $el[1];
         }
     }
-    system("clear");
-    printf("%-40s%s\n", "username:", $user->{name});
-    printf("%-40s%s\n", "primary group:", $userdetail{'pgrp'});
-    printf("%-40s%s\n", "groups:", $userdetail{'groups'});
-    printf("%-40s%s\n", "shell:", $userdetail{'shell'});
-    printf("%-40s%s\n", "home:", $userdetail{'home'});
-    printf("%-40s%s\n", "login:", $userdetail{'login'});
-    printf("%-40s%s\n", "account locked:", $userdetail{'account_locked'});
-    printf("%-40s%s\n", "unsuccessful login count:", defined($userdetail{'unsuccessful_login_count'}) ? $userdetail{'unsuccessful_login_count'} : 0);
-    printf("%-40s%s\n", "last successful login:", localtime($userdetail{'time_last_login'}));
-    printf("%-40s%s\n", "last unsuccessful login:", localtime($userdetail{'time_lastunsuccessful_login'}));
-    printf("Press enter to continue: ");
-    my $input = <>;
+    clear();
+    printf("%-40s%s\n", 'username:', $user->{name});
+    printf("%-40s%s\n", 'primary group:', $userdetail{'pgrp'});
+    printf("%-40s%s\n", 'groups:', $userdetail{'groups'});
+    printf("%-40s%s\n", 'shell:', $userdetail{'shell'});
+    printf("%-40s%s\n", 'home:', $userdetail{'home'});
+    printf("%-40s%s\n", 'login:', $userdetail{'login'});
+    printf("%-40s%s\n", 'account locked:', $userdetail{'account_locked'});
+    printf("%-40s%s\n", 'unsuccessful login count:', defined($userdetail{'unsuccessful_login_count'}) ? $userdetail{'unsuccessful_login_count'} : 0);
+    printf("%-40s%s\n", 'last successful login:', localtime($userdetail{'time_last_login'}));
+    printf("%-40s%s\n", 'last unsuccessful login:', localtime($userdetail{'time_lastunsuccessful_login'}));
+
+    print("\nPress Enter to Continue\n");
+    my $v = <>;
+
+    return;
 }
 
 sub view_account_detail_linux {
     my ($data, $config) = @_;
     my $user = $data->{user};
-    system("clear");
-    print "username:    $user->{name}\n";
-    print "pgroup:      $user->{pgrp}\n";
-    print "groups:      " . join(', ', @{$user->{groups}}) . "\n";
-    print "uid:         $user->{uid}\n";
-    print "gid:         $user->{gid}\n";
-    print "details:     $user->{comment}\n";
-    print "home:        $user->{home}\n";
-    print "shell:       $user->{shell}\n";
-    print "\n";
-    print "Expiry information:\n";
-    print `sudo chage -l $user->{name}`;
-    print "\n";
-    print "Press enter to continue: ";
-    my $input = <>;
+    clear();
+    printf("%-20s%s\n", 'username:', $user->{name});
+    printf("%-20s%s\n", 'pgroup:', $user->{pgrp});
+    printf("%-20s%s\n", 'groups:', join(', ', @{$user->{groups}}));
+    printf("%-20s%s\n", 'uid:', $user->{uid});
+    printf("%-20s%s\n", 'gid:', $user->{gid});
+    printf("%-20s%s\n", 'details:', $user->{comment});
+    printf("%-20s%s\n", 'home:', $user->{home});
+    printf("%-20s%s\n", 'shell:', $user->{shell});
+    print(`chage -l $user->{name}`);
+
+    print("\nPress Enter to Continue\n");
+    my $v = <>;
+
+    return;
 }
 
 sub change_account_detail_aix {
     my ($data, $config) = @_;
     my $user = $data->{user};
-    system("clear");
+    clear();
 
-    my @lsuser = split(/ /,`sudo lsuser $user->{name}`);
+    my @lsuser = split(/ /,`lsuser $user->{name}`);
     my $username = shift @lsuser;
     my %userdetail;
 
@@ -569,13 +593,13 @@ sub change_account_detail_aix {
     }  
     system("sudo chuser 'pgrp=$details{pgrp}' 'groups=$details{groups}' 'shell=$details{shell}' 'home=$details{home}' $username");
 
-    view_account_detail(@_);
+    view_account_detail_aix(@_);
 }
 
 sub change_account_detail_linux {
     my ($data, $config) = @_;
     my $user = $data->{user};
-    system("clear");
+    clear();
 
     my $correct = "N";
 
@@ -614,7 +638,7 @@ sub change_account_detail_linux {
         print "Is this correct? (Y|N) ";
         $correct = <>;  chomp $correct;
     }
-    system("sudo usermod -c '$details{comment}' -d '$details{home}' -s '$details{shell}' -g '$details{pgrp}' -G '$details{groups}' $details{name}");
+    system("usermod -c '$details{comment}' -d '$details{home}' -s '$details{shell}' -g '$details{pgrp}' -G '$details{groups}' $details{name}");
 
     $user->{comment} = $details{comment};
     $user->{home} = $details{home};
@@ -622,52 +646,70 @@ sub change_account_detail_linux {
     $user->{pgrp} = $details{pgrp};
     @{$user->{groups}} = split(/,/, $details{groups});
 
-    view_account_detail(@_);
+    view_account_detail_linux(@_);
+    return;
 }
 
 sub change_account_expire_linux {
     my ($data, $config) = @_;
     my $user = $data->{user};
-    system("clear");
 
-    my $correct = "N";
+    my $correct = 'N';
 
-    my $opts;
+    my @opts;
 
     while ( $correct !~ /[Yy]/ ) {
-        $opts = "";
+        clear();
+
+        @opts = ($user->{name});
+        my $banner = '';
 
         my $input;
         print "Modify account $user->{name}\n";
         print "Enter nothing to keep old value (viewable from user account details)\n";
+
         print "Expire date (YYYY-MM-DD format.  -1 to disable): ";
         $input = <>;  chomp $input;
-        $opts .= " -E '$input'" if ($input ne "");
+        push(@opts, ['E', $input]) if ($input ne "");
+        $banner .= sprintf("%-50s%s\n", 'epire date:', $input) if ($input ne "");
+
         print "Number of days of inactivity after password expires to lock account (-1 to disable): ";
         $input = <>;  chomp $input;
-        $opts .= " -I '$input'" if ($input ne "");
+        push(@opts, ['I', $input]) if ($input ne "");
+        $banner .= sprintf("%-50s%s\n", 'inactivity days:', $input) if ($input ne "");
+
         print "Minimum number of days between password changes (0 to disable, and let password be changed at any time): ";
         $input = <>;  chomp $input;
-        $opts .= " -m '$input'" if ($input ne "");
+        push(@opts, ['m', $input]) if ($input ne "");
+        $banner .= sprintf("%-50s%s\n", 'minimum days between changes:', $input) if ($input ne "");
+
         print "Maximum number of days between password changes (-1 to disable, making a password never expire): ";
         $input = <>;  chomp $input;
-        $opts .= " -M '$input'" if ($input ne "");
+        push(@opts, ['M', $input]) if ($input ne "");
+        $banner .= sprintf("%-50s%s\n", 'maximum days between changes:', $input) if ($input ne "");
+
         print "Number of days before expiry to warn that a password is going to expire:  ";
         $input = <>;  chomp $input;
-        $opts .= " -W '$input'" if ($input ne "");
-        print "Is this correct? (Y|N) ";
+        push(@opts, ['W', $input]) if ($input ne "");
+        $banner .= sprintf("%-50s%s\n", 'days to warn:', $input) if ($input ne "");
+
+        $banner .= "\n";
+
+        print($banner);
+        print("Is this correct? (Y|N) ");
         $correct = <>;  chomp $correct;
     }
-    system("sudo chage $opts '$user->{name}'");
+    system('chage ' . buildopts(\@opts));
 
-    view_account_detail(@_);
+    view_account_detail_linux(@_);
+    return;
 }
 
 sub reset_password_aix {
     my ($data, $config) = @_;
     my $user = $data->{user};
     print "Resetting account: $user->{name} for " . (split(/,/, $user->{comment}))[0] . "\n";
-    system("sudo passwd $user->{name}");
+    system("passwd $user->{name}");
     print "\nForce password change? (Y|N):";
     my $chpw = <>; chomp $chpw;
     if ($chpw =~ /[Nn]/) {
@@ -679,37 +721,40 @@ sub reset_password_aix {
 sub unlock_account_aix {
     my ($data, $config) = @_;
     my $user = $data->{user};
-    print "Unlocking account: $user->{name} for " . (split(/,/, $user->{comment}))[0] . "\n";
-    system("sudo chuser unsuccessful_login_count=0 account_locked=false $user->{name}");
-    print "\nUser Successfully Unlocked!\n";
-    print "\nPress Enter to Continue\n";
+    print("Unlocking account: $user->{name} for " . (split(/,/, $user->{comment}))[0] . "\n");
+    system("chuser unsuccessful_login_count=0 account_locked=false $user->{name}");
+    print("\nUser Successfully Unlocked!\n");
+    print("\nPress Enter to Continue\n");
     my $v = <>;
+    return;
 }
 sub reset_password_linux {
     my ($data, $config) = @_;
     my $user = $data->{user};
     print "Resetting account: $user->{name} for $user->{comment}\n";
-    system("sudo passwd $user->{name}");
+    system("passwd $user->{name}");
     unlock_account_linux(@_);
+    return;
 }
 
 sub unlock_account_linux {
     my ($data, $config) = @_;
     my $user = $data->{user};
     print "Unlocking account: $user->{name} for $user->{comment}\n";
-    system("sudo passwd -u $user->{name}");
-    system("sudo chage -d " . localtime->strftime('%F') . " $user->{name}");
-    print "\nUser Successfully Unlocked!\n";
-    print "\nPress Enter to Continue\n";
+    system("passwd -u $user->{name}");
+    system("chage -d " . localtime->strftime('%F') . " $user->{name}");
+    print("\nUser Successfully Unlocked!\n");
+    print("\nPress Enter to Continue\n");
     my $v = <>;
+    return;
 }
 
 sub create_user_account {
     my ($data, $config) = @_;
-    system("clear");
     my $correct = "N";
     my ($username, $fullname, $phone, $location, $business);
     while ( $correct !~ /[Yy]/ ) {
+        clear();
         print "Create new account:\n";
         print "-----------------------------------------------------------\n\n";
         print "Enter username: ";
@@ -734,7 +779,7 @@ sub create_user_account {
         print "Is this correct? (Y|N) ";
         $correct = <>;  chomp $correct;
     }  
-    system("clear");
+    clear();
     print "Creating account $username for $fullname ...\n";
 
     my @opts;
@@ -756,9 +801,9 @@ sub create_user_account {
     push(@opts, ['c', "$fullname,$phone,$location,$business,USER,USER"]);
     push(@opts, $username);
 
-    system('sudo useradd ' . buildopts(\@opts));
+    system('useradd ' . buildopts(\@opts));
 
-    system("sudo passwd $username");
+    system("passwd $username");
     print "\n\nAccount creation complete.\n";
     print "\n\nPress enter to continue";
     my $ret = <>;
@@ -766,7 +811,7 @@ sub create_user_account {
 
 sub create_admin_account {
     my ($data, $config) = @_;
-    system("clear");
+    clear();
     my $correct = "N";
     my ($username, $fullname, $phone, $location, $business);
     while ( $correct !~ /[Yy]/ ) {
@@ -794,7 +839,7 @@ sub create_admin_account {
         print "Is this correct? (Y|N) ";
         $correct = <>;  chomp $correct;
     }  
-    system("clear");
+    clear();
     print "Creating account $username for $fullname ...\n";
 
     my @opts;
@@ -816,9 +861,9 @@ sub create_admin_account {
     push(@opts, ['c', "$fullname,$phone,$location,$business,USER,USER"]);
     push(@opts, $username);
 
-    system('sudo useradd ' . buildopts(\@opts));
+    system('useradd ' . buildopts(\@opts));
 
-    system("sudo passwd $username");
+    system("passwd $username");
     print "\n\nAccount creation complete.\n";
     print "\n\nPress enter to continue";
     my $ret = <>;
@@ -826,7 +871,7 @@ sub create_admin_account {
 
 sub create_sftp_account_linux {
     my ($data, $config) = @_;
-    system("clear");
+    clear();
     my $correct = "N";
     my ($username, $fullname, $phone, $location, $business);
     while ( $correct !~ /[Yy]/ ) {
@@ -854,7 +899,7 @@ sub create_sftp_account_linux {
         print "Is this correct? (Y|N) ";
         $correct = <>;  chomp $correct;
     }  
-    system("clear");
+    clear();
     print "Creating SFTP account $username for $fullname ...\n";
 
     my @opts;
@@ -883,26 +928,26 @@ sub create_sftp_account_linux {
     push(@opts, $username);
 
 
-    system('sudo useradd ' . buildopts(\@opts));
+    system('useradd ' . buildopts(\@opts));
 
 
-    system('sudo useradd ' . buildopts(\@opts));
-    system('sudo chown ' . buildopts(["root:$ftpgrp", $homedir]));
-    system('sudo chmod ' . buildopts([755, $homedir]));
+    system('useradd ' . buildopts(\@opts));
+    system('chown ' . buildopts(["root:$ftpgrp", $homedir]));
+    system('chmod ' . buildopts([755, $homedir]));
 
     my $filesdir = "$homedir/files";
 
-    system('sudo mkdir ' . buildopts([$filesdir]));
-    system('sudo chown ' . buildopts(["$username:$ftpgrp", $filesdir]));
-    system('sudo chmod ' . buildopts([700, $filesdir]));
-    system('sudo setfacl ' . buildopts([['m', "u:$username:rwx"], $filesdir]));
-    system('sudo setfacl ' . buildopts([['d'], ['m', "u:$username:rwx"], $filesdir]));
-    system('sudo setfacl ' . buildopts([['m', "g:$ftpgrp:rwx"], $filesdir]));
-    system('sudo setfacl ' . buildopts([['d'], ['m', "g:$ftpgrp:rwx"], $filesdir]));
-    system('sudo setfacl ' . buildopts([['m', "g:$config->{admin}->{group}:rwx"], $filesdir]));
-    system('sudo setfacl ' . buildopts([['d'], ['m', "g:$config->{admin}->{group}:rwx"], $filesdir]));
+    system('mkdir ' . buildopts([$filesdir]));
+    system('chown ' . buildopts(["$username:$ftpgrp", $filesdir]));
+    system('chmod ' . buildopts([700, $filesdir]));
+    system('setfacl ' . buildopts([['m', "u:$username:rwx"], $filesdir]));
+    system('setfacl ' . buildopts([['d'], ['m', "u:$username:rwx"], $filesdir]));
+    system('setfacl ' . buildopts([['m', "g:$ftpgrp:rwx"], $filesdir]));
+    system('setfacl ' . buildopts([['d'], ['m', "g:$ftpgrp:rwx"], $filesdir]));
+    system('setfacl ' . buildopts([['m', "g:$config->{admin}->{group}:rwx"], $filesdir]));
+    system('setfacl ' . buildopts([['d'], ['m', "g:$config->{admin}->{group}:rwx"], $filesdir]));
 
-    system("sudo passwd $username");
+    system("passwd $username");
 
     print "\n\nSFTP account creation complete.\n";
     print "\n\nPress enter to continue";
@@ -912,7 +957,7 @@ sub create_sftp_account_linux {
 sub delete_account {
     my ($data, $config) = @_;
     my $user = $data->{user};
-    system("clear");
+    clear();
     print "##################################################################\n";
     print "ABOUT TO REMOVE USER ACCCOUNT!!!\n";
     print "##################################################################\n\n";
@@ -920,7 +965,7 @@ sub delete_account {
     print "Enter Y to confirm account removal for user $user->{name}: ";
     my $con = <>; chomp $con;
     if ($con eq "Y") {
-        system("sudo userdel $user->{name}");
+        system("userdel $user->{name}");
         print "\n\nUser: $user->{name} removed from $config->{OS}.\n";
         delete($data->{user});
     }
@@ -945,7 +990,7 @@ sub parsestanzas {
     my %output;
     my $stanza = 'default';
 
-    open(my $file, '-|', "sudo cat $filename");
+    open(my $file, '<', $filename);
     while (my $line = <$file>)
     {
         chomp($line);
@@ -957,7 +1002,6 @@ sub parsestanzas {
             $output{$stanza}{$1} = $2;
         }
     }
-    close($file);
 
     return %output;
 }
