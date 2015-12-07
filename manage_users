@@ -79,7 +79,7 @@ sub main {
                 push(@routines, $allroutines{$item});
             } else
             {
-                print("Could not find requested routine $item!  You are missing functionality!\n");
+                print("Could not find requested routine $item!  You are missing functionality!!\n");
             }
         }
         push(@routines, $allroutines{quit});
