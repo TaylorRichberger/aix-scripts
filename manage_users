@@ -109,6 +109,8 @@ sub main {
         my $opt = <>;
         chomp $opt;
 
+        $opt ||= 1;
+
         # if (input is a digit) && (input is > 1) && (input does not exceed list length)
         if (($opt =~ m/^\d+$/) && ($opt > 0) && ($opt <= scalar(@routines)))
         {
