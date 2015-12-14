@@ -69,23 +69,22 @@ sub main {
         view_account_detail => 'View User Account Details',
         view_all_users => 'View All Users'
     );
+    my @routines;
+
+    for my $item (@{$config->{menu}})
+    {
+        if (exists($allroutines{$item}))
+        {
+            push(@routines, $item);
+        } else
+        {
+            print("Could not find requested routine $item!  You are missing functionality!\n");
+        }
+    }
+    push(@routines, 'quit');
+
     while (!$config->{exit})
     {
-        clear();
-        my @routines;
-
-        for my $item (@{$config->{menu}})
-        {
-            if (exists($allroutines{$item}))
-            {
-                push(@routines, $item);
-            } else
-            {
-                print("Could not find requested routine $item!  You are missing functionality!\n");
-            }
-        }
-        push(@routines, 'quit');
-
         clear();
 
         if (exists($data{user})) {
@@ -173,7 +172,7 @@ sub dispatch {
 }
 
 sub clear {
-    print("\n" x 200);
+    system("clear");
 }
 
 sub buildopts {
