@@ -4,12 +4,14 @@ use strict;
 use Time::Piece;
 use POSIX;
 use JSON;
+use Term::Menu;
 
 sub ParseConfig($);
 
 sub main;
 sub dispatch;
 sub clear;
+sub pause;
 sub buildopts;
 sub change_account_detail;
 sub change_account_detail_aix;
@@ -51,6 +53,8 @@ sub ParseConfig($) {
 
 sub main {
     my $config = ParseConfig('/etc/manage_users.json');
+    push(@{$config->{menu}}, 'quit');
+
     $config->{exit} = 0;
     my %data;
 
@@ -71,55 +75,36 @@ sub main {
     );
     my @routines;
 
+    my $i = 0;
     for my $item (@{$config->{menu}})
     {
         if (exists($allroutines{$item}))
         {
+            my $display = $allroutines{$item};
             push(@routines, $item);
+            push(@routines, [$display, ++$i]);
         } else
         {
             print("Could not find requested routine $item!  You are missing functionality!\n");
+            pause();
         }
     }
-    push(@routines, 'quit');
 
     while (!$config->{exit})
     {
         clear();
 
+        my $prompt;
         if (exists($data{user})) {
-            print "Selected User:  $data{user}->{name} => $data{user}->{comment}\n";
-            print "------------------------------------------------------------------\n\n";
+            $prompt = Term::Menu->new(beforetext => "Selected User:  $data{user}->{name} => $data{user}->{comment}", aftertext=> "Choose an option: ");
         } else {
-            print "No user selected!  Please create or select a user to proceed\n";
-            print "------------------------------------------------------------------\n\n";
+            $prompt = Term::Menu->new(beforetext => "No user selected!  Please create or select a user to proceed", aftertext=> "Choose an option: ");
         }
 
-        # print routines
-        for (my $i = 0; $i < scalar(@routines); $i++)
-        {
-            my $routine = $routines[$i];
-            print(($i + 1) . ") " . $allroutines{$routine} . "\n");
-        }
+        my $routine = $prompt->menu(@routines);
 
-        print "------------------------------------------------------------------\n\n";
-        print "Select Option(default: 1): ";
-
-        my $opt = <>;
-        chomp $opt;
-
-        $opt ||= 1;
-
-        # if (input is a digit) && (input is > 1) && (input does not exceed list length)
-        if (($opt =~ m/^\d+$/) && ($opt > 0) && ($opt <= scalar(@routines)))
-        {
-            # options are listed starting at 1, but list is 0-indexed
-            $opt--;
-
-            my $routine = $routines[$opt];
-
-            dispatch($routine, \%data, $config);
-        }
+        dispatch($routine, \%data, $config);
+        pause();
     }
 }
 
@@ -175,13 +160,17 @@ sub clear {
     system("clear");
 }
 
+sub pause {
+    Term::Menu->new()->question('Press enter to continue');
+    return;
+}
+
 sub buildopts {
-    my $opts = $_[0];
     my @singles;
     my @argopts;
     my @args;
 
-    for my $opt (@{$opts})
+    for my $opt (@_)
     {
         if (ref($opt) eq 'ARRAY')
         {
@@ -227,6 +216,7 @@ sub get_users {
     } else
     {
         print("There is no get_users function for OS $config->{OS}, this is a bug in the program or deployment.\n");
+        pause();
     }
 }
 
@@ -352,95 +342,81 @@ sub get_users_linux {
 }
 
 sub select_user {
-    my ($data, $config) = @_;
-    print "\nEnter username or search string: ";
-    my $search = <>;
-    chomp($search);
-    my $regex = qr/$search/;
-
-    setpwent();
-    my @matches;
-    setpwent();
-    while(my ($name, $passwd, $uid, $gid, $quota, $comment, $gcos, $dir, $shell) = getpwent())
+    my ($data, $config, $username) = @_;
+    my $user;
+    if (defined($username))
     {
-        if ($name =~ $regex or $uid =~ $regex or $comment =~ $regex or $gcos =~ $regex)
-        {
-            push(@matches, {name => $name, password => $passwd, uid => $uid, gid => $gid, comment => ($gcos or $comment), home => $dir, shell => $shell});
-        }
-    }
-    endpwent();
-    clear();
-
-    if (scalar(@matches) > 0)
-    {
-        my %menu = (
-            Name => 'Menu',
-            Select => 'One',
-            Banner => 'Choose a user',
-            Display => 25,
-            Item_1 => {
-                Text => ']Convey[',
-                Convey => []
-            },
-        );
-
-        my %backsearch;
-
-        for (my $i = 0; $i < scalar(@matches); ++$i)
-        {
-            my $match = $matches[$i];
-
-            print "$i) $match->{name}\t$match->{comment}\n";
-        }
-        print "Select user index: ";
-        my $usr_index = <>;
-        chomp $usr_index;
-        my $user = $matches[$usr_index];
-        $data->{user} = $user;
-
-        $user->{pgrp} = getgrgid($user->{gid});
-        $user->{groups} = [];
-        setgrent();
-        while (my ($name, $passwd, $gid, $members) = getgrent())
-        {
-            my $username = $user->{name};
-
-            if (grep(/^$username$/, split(' ', $members)))
-            {
-                push(@{$user->{groups}}, $name);
-            }
-        }
-        endgrent();
+        my @matches = grep({$_->{name} eq $username} get_users($config));
+        $user = $matches[0];
     } else
     {
-        print "NO MATCHES FOUND FOR SEARCH OF '$search'\n";
-        print "\n\nPress enter to continue";
-        my $ret = <>;
+        my $prompt = Term::Menu->new(beforetext => 'Select user', aftertext=> 'Choose an option: ');
+        my $search = $prompt->question('Enter username or search string: ');
+        chomp($search);
+
+        my $regex = qr/$search/i;
+
+        my @matches = grep({$_->{name} =~ $regex or $_->{comment} =~ $regex or $_->{uid} =~ $regex or $_->{home} =~ $regex} get_users($config));
+
+        if (scalar(@matches) < 1)
+        {
+            print("NO MATCHES FOUND FOR SEARCH OF '$search'\n");
+            return;
+        } elsif (scalar(@matches) == 1)
+        {
+            $user = $matches[0];
+        } else
+        {
+            clear();
+            my @menu;
+            for (my $i = 0; $i < scalar(@matches); ++$i)
+            {
+                my $match = $matches[$i];
+
+                push(@menu, $match);
+                push(@menu, ["$match->{name}\t$match->{comment}", $i + 1]);
+            }
+            $user = $prompt->menu(@menu);
+        }
     }
+
+    $data->{user} = $user;
+
+    $user->{pgrp} = getgrgid($user->{gid});
+    $user->{groups} = [];
+    setgrent();
+    while (my ($name, $passwd, $gid, $members) = getgrent())
+    {
+        my $username = $user->{name};
+
+        if (grep(/^$username$/, split(' ', $members)))
+        {
+            push(@{$user->{groups}}, $name);
+        }
+    }
+    endgrent();
 }
 
 sub view_all_users {
     my ($data, $config) = @_;
+    clear();
+    my $prompt = Term::Menu->new(beforetext => 'Select sort');
 
     my @users;
 
     @users = get_users($config);
 
     my @sortoptions = (['name', 'User Name'], ['comment', 'Comment Field'], ['lastchange', 'Last Password Change'], ['expirationdate', 'Days Until Expiration'], ['uid', 'User ID'], ['pgrp', 'Primary Group'], ['maxage', 'Max Password Age']);
-    my $option;
-    while ((!defined($option)) or (length($option) == 0) or (($option < 0) or ($option > $#sortoptions)))
+
+    my @sorts;
+    for my $option (@sortoptions)
     {
-        clear();
-        for my $i (0..$#sortoptions)
-        {
-            print("$i) $sortoptions[$i]->[1]\n");
-        }
-        print("Select sort field: ");
-        $option = <>;
-        chomp($option);
+        push(@sorts, $option);
+        push(@sorts, [$option->[1], substr($option->[0], 0, 1)]);
     }
-    my $sort = $sortoptions[$option]->[0];
-    my $sortdesc = $sortoptions[$option]->[1];
+    my $sortoption = $prompt->menu(@sorts);
+    my $sort = $sortoption->[0];
+    my $sortdesc = $sortoption->[1];
     my @susers = sort {
             if (((!exists($a->{$sort})) or (length($a->{$sort}) == 0)) and ((!exists($b->{$sort})) or (length($b->{$sort}) == 0)))
             {
@@ -463,20 +439,16 @@ sub view_all_users {
             }
         } @users;
 
-    $option = undef;
-    print("Would you like to reverse the sort? <y/n>: ");
-    $option = <>;
+    my $option = Term::Menu->new(beforetext => 'Would you like to reverse the sort?', aftertext => ' > ')->menu(1 => ['Yes', 'y'], 0 => ['No', 'n']);
     chomp($option);
-    if ($option =~ m/^y/i)
+    if ($option)
     {
         @susers = reverse(@susers);
     }
 
     clear();
 
-    printf("%15.15s %25.25s %25.25s\n", 'Username', 'Comment', $sortdesc);
-    printf("%15.15s %25.25s %25.25s\n", '--------', '-------', '-' x length($sortdesc));
-
+    my @list;
     # Current date in days since the epoch
     my $date = int(time/86400);
     for my $user (@susers)
@@ -485,14 +457,10 @@ sub view_all_users {
         $hash{lastchange} = ((length($user->{lastchange}) > 0) ? sprintf('%.2f days ago', $date - $user->{lastchange}) : 'N/A');
         $hash{expirationdate} = ((length($user->{expirationdate}) > 0) ? sprintf('%.2f', $date - $user->{expirationdate}) : 'Never');
         $hash{maxage} = ((length($user->{maxage}) > 0) ? $user->{maxage} : 'None');
-        printf("%15.15s %25.25s %25.25s\n", $hash{name}, $hash{comment}, $hash{$sort});
+        push(@list, [$hash{name}, $hash{comment}, $hash{$sort}]);
     }
 
-    printf("%15.15s %25.25s %25.25s\n", '--------', '-------', '-' x length($sortdesc));
-    printf("%15.15s %25.25s %25.25s\n", 'Username', 'Comment', $sortdesc);
-
-    print "\n\nPress enter to continue";
-    my $ret = <>;
+    $prompt->table(['Username', 'Comment', $sortdesc], \@list);
 }
 
 sub view_account_detail_aix {
@@ -508,41 +476,40 @@ sub view_account_detail_aix {
         }
     }
     clear();
-    printf("%-40s%s\n", 'username:', $user->{name});
-    printf("%-40s%s\n", 'primary group:', $userdetail{'pgrp'});
-    printf("%-40s%s\n", 'groups:', $userdetail{'groups'});
-    printf("%-40s%s\n", 'shell:', $userdetail{'shell'});
-    printf("%-40s%s\n", 'home:', $userdetail{'home'});
-    printf("%-40s%s\n", 'login:', $userdetail{'login'});
-    printf("%-40s%s\n", 'account locked:', $userdetail{'account_locked'});
-    printf("%-40s%s\n", 'unsuccessful login count:', defined($userdetail{'unsuccessful_login_count'}) ? $userdetail{'unsuccessful_login_count'} : 0);
-    printf("%-40s%s\n", 'last successful login:', defined($userdetail{'time_last_login'}) ? strftime('%F %T', localtime($userdetail{'time_last_login'})) : 'never');
-    printf("%-40s%s\n", 'last unsuccessful login:', defined($userdetail{'time_last_unsuccessful_login'}) ? strftime('%F %T', localtime($userdetail{'time_last_unsuccessful_login'})) : 'never');
-
-    print("\nPress Enter to Continue\n");
-    my $v = <>;
-
-    return;
+    Term::Menu->new()->table(['item', 'value'], [
+    ['username', $user->{name}],
+    ['primary group', $userdetail{'pgrp'}],
+    ['groups', $userdetail{'groups'}],
+    ['shell', $userdetail{'shell'}],
+    ['home', $userdetail{'home'}],
+    ['login', $userdetail{'login'}],
+    ['account locked', $userdetail{'account_locked'}],
+    ['unsuccessful login count', defined($userdetail{'unsuccessful_login_count'}) ? $userdetail{'unsuccessful_login_count'} : 0],
+    ['last successful login', defined($userdetail{'time_last_login'}) ? strftime('%F %T', localtime($userdetail{'time_last_login'})) : 'never'],
+    ['last unsuccessful login', defined($userdetail{'time_last_unsuccessful_login'}) ? strftime('%F %T', localtime($userdetail{'time_last_unsuccessful_login'})) : 'never']]);
 }
 
 sub view_account_detail_linux {
     my ($data, $config) = @_;
     my $user = $data->{user};
     clear();
-    printf("%-20s%s\n", 'username:', $user->{name});
-    printf("%-20s%s\n", 'pgroup:', $user->{pgrp});
-    printf("%-20s%s\n", 'groups:', join(', ', @{$user->{groups}}));
-    printf("%-20s%s\n", 'uid:', $user->{uid});
-    printf("%-20s%s\n", 'gid:', $user->{gid});
-    printf("%-20s%s\n", 'details:', $user->{comment});
-    printf("%-20s%s\n", 'home:', $user->{home});
-    printf("%-20s%s\n", 'shell:', $user->{shell});
-    print(`chage -l $user->{name}`);
-
-    print("\nPress Enter to Continue\n");
-    my $v = <>;
-
-    return;
+    my @items = (
+        ['username', $user->{name}],
+        ['pgroup', $user->{pgrp}],
+        ['uid', $user->{uid}],
+        ['gid', $user->{gid}],
+        ['details', $user->{comment}],
+        ['home', $user->{home}],
+        ['shell', $user->{shell}],
+        ['last password change', strftime('%a, %d %b %Y', gmtime($user->{lastchange} * 24 * 60 * 60))],
+        ['minimum password age', $user->{minage} || 'N/A'],
+        ['maximum password age', $user->{maxage} || 'N/A'],
+        ['warning period', $user->{warningperiod} || 'N/A'],
+        ['inactivity period', $user->{inactivityperiod} || 'N/A'],
+        ['account expiration date', (defined($user->{expirationdate}) && length($user->{expirationdate}) > 0) ? strftime('%a, %d %b %Y', gmtime($user->{expirationdate} * 24 * 60 * 60)) : 'N/A']
+    );
+    Term::Menu->new()->table(['item', 'value'], \@items);
+    Term::Menu->new()->table(['group'], [map({ [$_] }  @{$user->{groups}})]);
 }
 
 sub change_account_detail_aix {
@@ -564,36 +531,39 @@ sub change_account_detail_aix {
 
     my %details;
 
-    my $correct = "N";
+    my $correct = 0;
 
-    while ( $correct !~ /[Yy]/ ) {
+    my $prompt = Term::Menu->new(beforetext => 'Is this correct?', aftertext=> ' > ');
+
+    while (not $correct) {
         %details = %userdetail;
         my $input;
-        print "Modify account $username:\n";
-        print "Enter nothing to keep default\n";
-        print "primary group [$details{pgrp}]: ";
-        $input = <>;  chomp $input;
+        print("Modify account $username:\n");
+        print("Enter nothing to keep default\n");
+        $input = $prompt->question("primary group [$details{pgrp}]: ");
+        chomp($input);
         $details{pgrp} = $input if ($input ne "");
-        print "groups [$details{groups}]: ";
-        $input = <>;  chomp $input;
+        $input = $prompt->question("groups [$details{groups}]: ");
+        chomp $input;
         $details{groups} = $input if ($input ne "");
-        print "shell [$details{shell}]: ";
-        $input = <>;  chomp $input;
+        $input = $prompt->question("shell [$details{shell}]: ");
+        chomp $input;
         $details{shell} = $input if ($input ne "");
-        print "home [$details{home}]:\n";
-        $input = <>;  chomp $input;
+        $input = $prompt->question("home [$details{home}]: ");
+        chomp $input;
         $details{home} = $input if ($input ne "");
-        print "-----------------------------------------------------------\n\n";
-        print "username:                 $username\n";
-        print "primary group:            $details{'pgrp'}\n";
-        print "groups:                   $details{'groups'}\n";
-        print "shell:                    $details{'shell'}\n";
-        print "home:                     $details{'home'}\n";
-        print "-----------------------------------------------------------\n\n";
-        print "Is this correct? (Y|N) ";
-        $correct = <>;  chomp $correct;
-    }  
-    system("sudo chuser 'pgrp=$details{pgrp}' 'groups=$details{groups}' 'shell=$details{shell}' 'home=$details{home}' $username");
+        $prompt->table(['item', 'value'], [
+                ['username', $username],
+                ['primary group', $details{pgrp}],
+                ['groups', $details{groups}],
+                ['shell', $details{shell}],
+                ['home', $details{home}]]);
+        $correct = $prompt->menu(1 => ['Yes', 'y'], 0 => ['No', 'n'], 2 => ['Cancel', 'c']);
+        return if ($correct == 2);
+    }
+    system('chuser ' . buildopts("pgrp=$details{pgrp}", "groups=$details{groups}", "shell=$details{shell}", "home=$details{home}", $username));
+
+    select_user(@_, $details{name});
 
     view_account_detail_aix(@_);
 }
@@ -603,50 +573,52 @@ sub change_account_detail_linux {
     my $user = $data->{user};
     clear();
 
-    my $correct = "N";
+    my $correct = 0;
 
     my %details;
 
-    while ( $correct !~ /[Yy]/ ) {
+    my $prompt = Term::Menu->new(beforetext => 'Is this correct?', aftertext=> ' > ');
+
+    while (not $correct) {
         %details = %{$user};
         $details{groups} = join(',', @{$user->{groups}});
 
         my $input;
-        print "Modify account $details{name}\n";
-        print "Enter nothing to keep default\n";
-        print "details [$details{comment}]: ";
-        $input = <>;  chomp $input;
+        print("Modify account $details{name}\n");
+        print("Enter nothing to keep default\n");
+        $input = $prompt->question("details [$details{comment}]: ");
+        chomp $input;
         $details{comment} = $input if ($input ne "");
-        print "primary group [$details{pgrp}]: ";
-        $input = <>;  chomp $input;
+        $input = $prompt->question("primary group [$details{pgrp}]: ");
+        chomp $input;
         $details{pgrp} = $input if ($input ne "");
-        print "groups [$details{groups}]: ";
-        $input = <>;  chomp $input;
+        $input = $prompt->question("groups [$details{groups}]: ");
+        chomp $input;
         $details{groups} = $input if ($input ne "");
-        print "shell [$details{shell}]: ";
-        $input = <>;  chomp $input;
+        $input = $prompt->question("shell [$details{shell}]: ");
+        chomp $input;
         $details{shell} = $input if ($input ne "");
-        print "home [$details{home}]:";
-        $input = <>;  chomp $input;
+        $input = $prompt->question("home [$details{home}]: ");
+        chomp $input;
         $details{home} = $input if ($input ne "");
-        print "-----------------------------------------------------------\n\n";
-        print "username:                 $details{name}\n";
-        print "details:                  $details{comment}\n";
-        print "primary group:            $details{pgrp}\n";
-        print "groups:                   $details{groups}\n";
-        print "shell:                    $details{shell}\n";
-        print "home:                     $details{home}\n";
-        print "-----------------------------------------------------------\n\n";
-        print "Is this correct? (Y|N) ";
-        $correct = <>;  chomp $correct;
+        $prompt->table(['item', 'value'], [
+            ['username', $details{name}],
+            ['details', $details{comment}],
+            ['primary group', $details{pgrp}],
+            ['groups', $details{groups}],
+            ['shell', $details{shell}],
+            ['home', $details{home}]]);
+        $correct = $prompt->menu(1 => ['Yes', 'y'], 0 => ['No', 'n'], 2 => ['Cancel', 'c']);
+        return if ($correct == 2);
     }
-    system("usermod -c '$details{comment}' -d '$details{home}' -s '$details{shell}' -g '$details{pgrp}' -G '$details{groups}' $details{name}");
+    system('usermod ' . buildopts($details{name},
+                ['c', $details{comment}],
+                ['d', $details{home}],
+                ['s', $details{shell}],
+                ['g', $details{pgrp}],
+                ['G', $details{groups}]));
 
-    $user->{comment} = $details{comment};
-    $user->{home} = $details{home};
-    $user->{shell} = $details{shell};
-    $user->{pgrp} = $details{pgrp};
-    @{$user->{groups}} = split(/,/, $details{groups});
+    select_user(@_, $details{name});
 
     view_account_detail_linux(@_);
     return;
@@ -656,52 +628,61 @@ sub change_account_expire_linux {
     my ($data, $config) = @_;
     my $user = $data->{user};
 
-    my $correct = 'N';
+    my $correct = 0;
 
-    my @opts;
+    my $prompt = Term::Menu->new(beforetext => 'Is this correct?', aftertext=> ' > ');
 
-    while ( $correct !~ /[Yy]/ ) {
+    my %details;
+    while (not $correct) {
         clear();
-
-        @opts = ($user->{name});
-        my $banner = '';
+        %details = %{$user};
+        $details{minage} = $user->{minage} || 0;
+        $details{maxage} = $user->{maxage} || -1;
+        $details{warningperiod} = $user->{warningperiod} || 0;
+        $details{inactivityperiod} = $user->{inactivityperiod} || -1;
+        $details{expirationdate} = (defined($user->{expirationdate}) && length($user->{expirationdate}) > 0) ? strftime('%Y-%m-%d', gmtime($user->{expirationdate} * 24 * 60 * 60)) : -1;
 
         my $input;
-        print "Modify account $user->{name}\n";
-        print "Enter nothing to keep old value (viewable from user account details)\n";
+        print("Modify account $user->{name}\n");
+        print("Enter nothing to keep old value\n");
+        $input = $prompt->question("Expire date (YYYY-MM-DD format.  -1 to disable) [$details{expirationdate}]: ");
+        chomp $input;
+        $details{expirationdate} = $input if ($input ne "");
 
-        print "Expire date (YYYY-MM-DD format.  -1 to disable): ";
-        $input = <>;  chomp $input;
-        push(@opts, ['E', $input]) if ($input ne "");
-        $banner .= sprintf("%-50s%s\n", 'epire date:', $input) if ($input ne "");
+        $input = $prompt->question("Number of days of inactivity after password expires to lock account (-1 to disable) [$details{inactivityperiod}]: ");
+        chomp $input;
+        $details{inactivityperiod} = $input if ($input ne "");
 
-        print "Number of days of inactivity after password expires to lock account (-1 to disable): ";
-        $input = <>;  chomp $input;
-        push(@opts, ['I', $input]) if ($input ne "");
-        $banner .= sprintf("%-50s%s\n", 'inactivity days:', $input) if ($input ne "");
+        $input = $prompt->question("Minimum number of days between password changes (0 to disable, and let password be changed at any time) [$details{minage}]: ");
+        chomp $input;
+        $details{minage} = $input if ($input ne "");
 
-        print "Minimum number of days between password changes (0 to disable, and let password be changed at any time): ";
-        $input = <>;  chomp $input;
-        push(@opts, ['m', $input]) if ($input ne "");
-        $banner .= sprintf("%-50s%s\n", 'minimum days between changes:', $input) if ($input ne "");
+        $input = $prompt->question("Maximum number of days between password changes (-1 to disable, making a password never expire) [$details{maxage}]: ");
+        chomp $input;
+        $details{maxage} = $input if ($input ne "");
 
-        print "Maximum number of days between password changes (-1 to disable, making a password never expire): ";
-        $input = <>;  chomp $input;
-        push(@opts, ['M', $input]) if ($input ne "");
-        $banner .= sprintf("%-50s%s\n", 'maximum days between changes:', $input) if ($input ne "");
+        $input = $prompt->question("Number of days before expiry to warn that a password is going to expire [$details{warningperiod}]:  ");
+        chomp $input;
+        $details{warningperiod} = $input if ($input ne "");
 
-        print "Number of days before expiry to warn that a password is going to expire:  ";
-        $input = <>;  chomp $input;
-        push(@opts, ['W', $input]) if ($input ne "");
-        $banner .= sprintf("%-50s%s\n", 'days to warn:', $input) if ($input ne "");
+        $prompt->table(['item', 'value'], [
+            ['expiration date', $details{expirationdate}],
+            ['inactivity period', $details{inactivityperiod}],
+            ['minimum age', $details{minage}],
+            ['maximum age', $details{maxage}],
+            ['warning period', $details{warningperiod}]]);
 
-        $banner .= "\n";
-
-        print($banner);
-        print("Is this correct? (Y|N) ");
-        $correct = <>;  chomp $correct;
+        $correct = $prompt->menu(1 => ['Yes', 'y'], 0 => ['No', 'n'], 2 => ['Cancel', 'c']);
+        return if ($correct == 2);
     }
-    system('chage ' . buildopts(\@opts));
+    system('chage ' . buildopts($details{name},
+                ['E', $details{expirationdate}],
+                ['I', $details{inactivityperiod}],
+                ['m', $details{minage}],
+                ['M', $details{maxage}],
+                ['W', $details{warningperiod}]));
+
+    select_user(@_, $details{name});
 
     view_account_detail_linux(@_);
     return;
@@ -710,11 +691,10 @@ sub change_account_expire_linux {
 sub reset_password_aix {
     my ($data, $config) = @_;
     my $user = $data->{user};
-    print "Resetting account: $user->{name} for " . (split(/,/, $user->{comment}))[0] . "\n";
+    print("Resetting account: $user->{name} for " . (split(/,/, $user->{comment}))[0] . "\n");
     system("passwd $user->{name}");
-    print "\nForce password change? (Y|N):";
-    my $chpw = <>; chomp $chpw;
-    if ($chpw =~ /[Nn]/) {
+    my $chpw = Term::Menu->new(beforetext => 'Force password change?', aftertext => ' > ')->menu(1 => ['Yes', 'y'], 0 => ['No', 'n']);
+    if (not $chpw) {
         system("sudo pwdadm -c $user->{name}");
     }
     unlock_account_aix(@_);
@@ -726,63 +706,53 @@ sub unlock_account_aix {
     print("Unlocking account: $user->{name} for " . (split(/,/, $user->{comment}))[0] . "\n");
     system("chuser unsuccessful_login_count=0 account_locked=false $user->{name}");
     print("\nUser Successfully Unlocked!\n");
-    print("\nPress Enter to Continue\n");
-    my $v = <>;
-    return;
 }
 sub reset_password_linux {
     my ($data, $config) = @_;
     my $user = $data->{user};
-    print "Resetting account: $user->{name} for $user->{comment}\n";
+    print("Resetting account: $user->{name} for $user->{comment}\n");
     system("passwd $user->{name}");
     unlock_account_linux(@_);
-    return;
 }
 
 sub unlock_account_linux {
     my ($data, $config) = @_;
     my $user = $data->{user};
-    print "Unlocking account: $user->{name} for $user->{comment}\n";
+    print("Unlocking account: $user->{name} for $user->{comment}\n");
     system("passwd -u $user->{name}");
-    system("chage -d " . localtime->strftime('%F') . " $user->{name}");
+    system('chage ' . buildopts($user->{name}, ['d', strftime('%F', localtime(time))]));
     print("\nUser Successfully Unlocked!\n");
-    print("\nPress Enter to Continue\n");
-    my $v = <>;
-    return;
 }
 
 sub create_user_account {
     my ($data, $config) = @_;
-    my $correct = "N";
+    my $correct = 0;
     my ($username, $fullname, $phone, $location, $business);
-    while ( $correct !~ /[Yy]/ ) {
+    my $prompt = Term::Menu->new(beforetext => 'Is this correct?', aftertext=> ' > ');
+    while (not $correct) {
         clear();
-        print "Create new account:\n";
-        print "-----------------------------------------------------------\n\n";
-        print "Enter username: ";
-        $username = <>; chomp $username;
-        print "Enter Full Name: ";
-        $fullname = <>; chomp $fullname;
-        print "Enter Phone Number: ";
-        $phone = <>; chomp $phone;
-        print "Enter Location: ";
-        $location = <>; chomp $location;
-        print "Enter Business Unit: ";
-        $business = <>; chomp $business;
-        print "\n\n-----------------------------------------------------------\n\n";
-        print "Please confim user details:\n";
-        print "-----------------------------------------------------------\n\n";
-        print "Username:  $username\n";
-        print "Fullname:  $fullname\n";
-        print "Phone:     $phone\n";
-        print "Location:  $location\n";
-        print "Business:  $business\n";
-        print "-----------------------------------------------------------\n\n";
-        print "Is this correct? (Y|N) ";
-        $correct = <>;  chomp $correct;
-    }  
+        $username = $prompt->question("Username: ");
+        chomp $username;
+        $fullname = $prompt->question("Full Name: ");
+        chomp $fullname;
+        $phone = $prompt->question("Enter Phone Number: ");
+        chomp $phone;
+        $location = $prompt->question("Enter Location: ");
+        chomp $location;
+        $business = $prompt->question("Enter Business Unit: ");
+        chomp $business;
+
+        $prompt->table(['item', 'value'], [
+            ['Username', $username],
+            ['Fullname', $fullname],
+            ['Phone', $phone],
+            ['Location', $location],
+            ['Business unit', $business]]);
+        $correct = $prompt->menu(1 => ['Yes', 'y'], 0 => ['No', 'n'], 2 => ['Cancel', 'c']);
+        return if ($correct == 2);
+    }
     clear();
-    print "Creating account $username for $fullname ...\n";
+    print("Creating account $username for $fullname ...\n");
 
     my @opts;
     if ($config->{user}->{sharedhome})
@@ -803,46 +773,44 @@ sub create_user_account {
     push(@opts, ['c', "$fullname,$phone,$location,$business,USER,USER"]);
     push(@opts, $username);
 
-    system('useradd ' . buildopts(\@opts));
+    system('useradd ' . buildopts(@opts));
 
     system("passwd $username");
-    print "\n\nAccount creation complete.\n";
-    print "\n\nPress enter to continue";
-    my $ret = <>;
+
+    print("\n\nAccount creation complete.\n");
+
+    select_user(@_, $username);
 }
 
 sub create_admin_account {
     my ($data, $config) = @_;
-    clear();
-    my $correct = "N";
+    my $correct = 0;
     my ($username, $fullname, $phone, $location, $business);
-    while ( $correct !~ /[Yy]/ ) {
-        print "Create new account:\n";
-        print "-----------------------------------------------------------\n\n";
-        print "Enter username: ";
-        $username = <>; chomp $username;
-        print "Enter Full Name: ";
-        $fullname = <>; chomp $fullname;
-        print "Enter Phone Number: ";
-        $phone = <>; chomp $phone;
-        print "Enter Location: ";
-        $location = <>; chomp $location;
-        print "Enter Business Unit: ";
-        $business = <>; chomp $business;
-        print "\n\n-----------------------------------------------------------\n\n";
-        print "Please confim user details:\n";
-        print "-----------------------------------------------------------\n\n";
-        print "Username:  $username\n";
-        print "Fullname:  $fullname\n";
-        print "Phone:     $phone\n";
-        print "Location:  $location\n";
-        print "Business:  $business\n";
-        print "-----------------------------------------------------------\n\n";
-        print "Is this correct? (Y|N) ";
-        $correct = <>;  chomp $correct;
-    }  
+    my $prompt = Term::Menu->new(beforetext => 'Is this correct?', aftertext=> ' > ');
+    while (not $correct) {
+        clear();
+        $username = $prompt->question("Username: ");
+        chomp $username;
+        $fullname = $prompt->question("Full Name: ");
+        chomp $fullname;
+        $phone = $prompt->question("Enter Phone Number: ");
+        chomp $phone;
+        $location = $prompt->question("Enter Location: ");
+        chomp $location;
+        $business = $prompt->question("Enter Business Unit: ");
+        chomp $business;
+
+        $prompt->table(['item', 'value'], [
+            ['Username', $username],
+            ['Fullname', $fullname],
+            ['Phone', $phone],
+            ['Location', $location],
+            ['Business unit', $business]]);
+        $correct = $prompt->menu(1 => ['Yes', 'y'], 0 => ['No', 'n'], 2 => ['Cancel', 'c']);
+        return if ($correct == 2);
+    }
     clear();
-    print "Creating account $username for $fullname ...\n";
+    print("Creating account $username for $fullname ...\n");
 
     my @opts;
     if ($config->{admin}->{sharedhome})
@@ -863,46 +831,41 @@ sub create_admin_account {
     push(@opts, ['c', "$fullname,$phone,$location,$business,USER,USER"]);
     push(@opts, $username);
 
-    system('useradd ' . buildopts(\@opts));
+    system('useradd ' . buildopts(@opts));
 
     system("passwd $username");
-    print "\n\nAccount creation complete.\n";
-    print "\n\nPress enter to continue";
-    my $ret = <>;
+    print("\n\nAccount creation complete.\n");
 }
 
 sub create_sftp_account_linux {
     my ($data, $config) = @_;
-    clear();
-    my $correct = "N";
+    my $correct = 0;
     my ($username, $fullname, $phone, $location, $business);
-    while ( $correct !~ /[Yy]/ ) {
-        print "Create new SFTP account:\n";
-        print "-----------------------------------------------------------\n\n";
-        print "Enter username: ";
-        $username = <>; chomp $username;
-        print "Enter Full Name: ";
-        $fullname = <>; chomp $fullname;
-        print "Enter Phone Number: ";
-        $phone = <>; chomp $phone;
-        print "Enter Location: ";
-        $location = <>; chomp $location;
-        print "Enter Business Unit: ";
-        $business = <>; chomp $business;
-        print "\n\n-----------------------------------------------------------\n\n";
-        print "Please confim user details:\n";
-        print "-----------------------------------------------------------\n\n";
-        print "Username:  $username\n";
-        print "Fullname:  $fullname\n";
-        print "Phone:     $phone\n";
-        print "Location:  $location\n";
-        print "Business:  $business\n";
-        print "-----------------------------------------------------------\n\n";
-        print "Is this correct? (Y|N) ";
-        $correct = <>;  chomp $correct;
-    }  
+    my $prompt = Term::Menu->new(beforetext => 'Is this correct?', aftertext=> ' > ');
+    while (not $correct) {
+        clear();
+        $username = $prompt->question("Username: ");
+        chomp $username;
+        $fullname = $prompt->question("Full Name: ");
+        chomp $fullname;
+        $phone = $prompt->question("Enter Phone Number: ");
+        chomp $phone;
+        $location = $prompt->question("Enter Location: ");
+        chomp $location;
+        $business = $prompt->question("Enter Business Unit: ");
+        chomp $business;
+
+        $prompt->table(['item', 'value'], [
+            ['Username', $username],
+            ['Fullname', $fullname],
+            ['Phone', $phone],
+            ['Location', $location],
+            ['Business unit', $business]]);
+        $correct = $prompt->menu(1 => ['Yes', 'y'], 0 => ['No', 'n'], 2 => ['Cancel', 'c']);
+        return if ($correct == 2);
+    }
     clear();
-    print "Creating SFTP account $username for $fullname ...\n";
+    print("Creating account $username for $fullname ...\n");
 
     my @opts;
     my $homedir;
@@ -930,52 +893,46 @@ sub create_sftp_account_linux {
     push(@opts, $username);
 
 
-    system('useradd ' . buildopts(\@opts));
+    system('useradd ' . buildopts(@opts));
 
 
-    system('useradd ' . buildopts(\@opts));
-    system('chown ' . buildopts(["root:$ftpgrp", $homedir]));
-    system('chmod ' . buildopts([755, $homedir]));
+    system('useradd ' . buildopts(@opts));
+    system('chown ' . buildopts("root:$ftpgrp", $homedir));
+    system('chmod ' . buildopts(755, $homedir));
 
     my $filesdir = "$homedir/files";
 
-    system('mkdir ' . buildopts([$filesdir]));
-    system('chown ' . buildopts(["$username:$ftpgrp", $filesdir]));
-    system('chmod ' . buildopts([700, $filesdir]));
-    system('setfacl ' . buildopts([['m', "u:$username:rwx"], $filesdir]));
-    system('setfacl ' . buildopts([['d'], ['m', "u:$username:rwx"], $filesdir]));
-    system('setfacl ' . buildopts([['m', "g:$ftpgrp:rwx"], $filesdir]));
-    system('setfacl ' . buildopts([['d'], ['m', "g:$ftpgrp:rwx"], $filesdir]));
-    system('setfacl ' . buildopts([['m', "g:$config->{admin}->{group}:rwx"], $filesdir]));
-    system('setfacl ' . buildopts([['d'], ['m', "g:$config->{admin}->{group}:rwx"], $filesdir]));
+    system('mkdir ' . buildopts($filesdir));
+    system('chown ' . buildopts("$username:$ftpgrp", $filesdir));
+    system('chmod ' . buildopts(700, $filesdir));
+    system('setfacl ' . buildopts(['m', "u:$username:rwx"], $filesdir));
+    system('setfacl ' . buildopts(['d'], ['m', "u:$username:rwx"], $filesdir));
+    system('setfacl ' . buildopts(['m', "g:$ftpgrp:rwx"], $filesdir));
+    system('setfacl ' . buildopts(['d'], ['m', "g:$ftpgrp:rwx"], $filesdir));
+    system('setfacl ' . buildopts(['m', "g:$config->{admin}->{group}:rwx"], $filesdir));
+    system('setfacl ' . buildopts(['d'], ['m', "g:$config->{admin}->{group}:rwx"], $filesdir));
 
     system("passwd $username");
 
-    print "\n\nSFTP account creation complete.\n";
-    print "\n\nPress enter to continue";
-    my $ret = <>;
+    print("\n\nSFTP account creation complete.\n");
 }
 
 sub delete_account {
     my ($data, $config) = @_;
     my $user = $data->{user};
     clear();
-    print "##################################################################\n";
-    print "ABOUT TO REMOVE USER ACCCOUNT!!!\n";
-    print "##################################################################\n\n";
+    print("##################################################################\n");
+    print("ABOUT TO REMOVE USER ACCOUNT!!!\n");
+    print("##################################################################\n\n");
 
-    print "Enter Y to confirm account removal for user $user->{name}: ";
-    my $con = <>; chomp $con;
-    if ($con eq "Y") {
+    my $con = Term::Menu->new(beforetext => "Would you like to permanently delete user $user->{name}?", aftertext => ' > ')->menu(1 => ['Yes', 'y'], 0 => ['No', 'n']);
+    if ($con) {
         system("userdel $user->{name}");
-        print "\n\nUser: $user->{name} removed from $config->{OS}.\n";
+        print("User: $user->{name} removed from $config->{OS}.\n");
         delete($data->{user});
+    } else {
+        print("User $user->{name} not deleted.\n");
     }
-    else {
-        print "\n\nYou did not enter Y, returning to main menu without removing user.\n";
-    }
-    print "\nPress enter to continue ";
-    my $ret = <>;
 }
 
 sub unselect_user {
@@ -983,8 +940,6 @@ sub unselect_user {
     my $username = $data->{user}->{name};
     delete($data->{user});
     print("Unselected user $username\n");
-    print("\nPress enter to continue ");
-    my $ret = <>;
 }
 
 sub parsestanzas {
