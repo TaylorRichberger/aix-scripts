@@ -1,0 +1,286 @@
+#!/usr/bin/perl
+use warnings;
+use strict;
+use Term::Menu;
+
+sub main;
+sub clear;
+sub pause;
+sub buildopts;
+sub parsestanzas;
+
+sub list_locked_users;
+sub unlock_user;
+sub unlock_all;
+
+main();
+
+sub main {
+    my @menu = (
+        \&list_locked_users, ['List Locked Users', 'l'],
+        \&unlock_user, ['Unlock User', 'u'],
+        \&unlock_all, ['Unlock All Users', 'a'],
+        0, ['Quit', 'q']
+    );
+    my $prompt = Term::Menu->new(beforetext => "Manage Locked Users", aftertext=> "Choose an option: ");
+
+    while (1)
+    {
+        clear();
+
+        my $result = $prompt->menu(@menu);
+
+        return if (not $result);
+
+        $result->();
+    }
+}
+
+sub list_locked_users
+{
+    my %user = parsestanzas('/etc/security/user');
+    my %passwd = parsestanzas('/etc/security/lastlog');
+    for my $username (keys(%passwd))
+    {
+        if (exists($user{$username}))
+        {
+            my %newhash = (%{$user{$username}}, %{$passwd{$username}});
+            $user{$username} = \%newhash;
+        } else
+        {
+            $user{$username} = $passwd{$username};
+        }
+    }
+    my @body;
+    while (my ($username, $data) = each(%user))
+    {
+        my $loginretries;
+        if (exists($data->{loginretries}))
+        {
+            $loginretries = $data->{loginretries};
+        } elsif (exists($user{default}->{loginretries}))
+        {
+            $loginretries = $user{default}->{loginretries};
+        } else
+        {
+            $loginretries = 0;
+        }
+        my $accountlocked = exists($data->{account_locked}) ? $data->{account_locked} eq 'true' : 0;
+
+        my $loginfailures = exists($data->{unsuccessful_login_count}) ? $data->{unsuccessful_login_count} : 0;
+
+        if ($username ne 'default' and (($loginretries > 0 and $loginfailures >= $loginretries) or $accountlocked))
+        {
+            push(@body, [$username, $loginfailures, $loginretries, $accountlocked ? 'true' : 'false']);
+        }
+    }
+    Term::Menu->new()->table(
+        ['Username', 'Failed Login Count', 'Allowed retries', 'Account Locked'],
+        \@body
+    );
+    pause();
+}
+
+sub unlock_user
+{
+}
+sub unlock_all
+{
+}
+
+sub clear {
+    system("clear");
+}
+
+sub pause {
+    Term::Menu->new()->question('Press enter to continue');
+    return;
+}
+
+sub buildopts {
+    my @singles;
+    my @argopts;
+    my @args;
+
+    for my $opt (@_)
+    {
+        if (ref($opt) eq 'ARRAY')
+        {
+            if (scalar(@{$opt} > 1))
+            {
+                # Make sure all single-quotes are escaped and everything else is properly captured
+                my $optarg = $opt->[1];
+                $optarg =~ s/'/'"'"'/g;
+                push(@argopts, "-$opt->[0]", "'$optarg'");
+            } else
+            {
+                push(@singles, $opt->[0]);
+            }
+        } else
+        {
+            my $arg = $opt;
+            $arg =~ s/'/'"'"'/g;
+            push(@args, "'$arg'");
+        }
+    }
+    my @outstrings;
+
+    if (scalar(@singles) > 0)
+    {
+        push(@outstrings, '-' . join('', @singles));
+    }
+
+    push(@outstrings, @argopts);
+    push(@outstrings, @args);
+    return join(' ', @outstrings);
+}
+
+sub parsestanzas {
+    my $filename = $_[0];
+    my %output;
+    my $stanza = 'default';
+
+    open(my $file, '<', $filename);
+    while (my $line = <$file>)
+    {
+        chomp($line);
+        if ($line =~ m/^([^\s#\*]+):\s*$/)
+        {
+            $stanza = $1;
+        } elsif ($line =~ m/^\s+(\S+)\s*=\s*(.*)$/)
+        {
+            $output{$stanza}{$1} = $2;
+        }
+    }
+
+    return %output;
+}
+
+=pod
+
+=encoding utf-8
+
+=head1 NAME
+
+manage_users
+
+=head1 SYNOPSIS
+
+# manage_users
+
+$ sudo manage_users
+
+=head1 DESCRIPTION
+
+This script is used to manage users in a simple cross-platform way across AIX
+and Linux.  It is built to be menu-driven, and relies on a config file
+(currently hard-coded to be /etc/manage_users.json) to define the menu to be
+used.
+
+An example config file follows:
+
+    {
+      "OS": "Linux",
+      "user": {
+        "pgrp": "users",
+        "home": "/home",
+        "sharedhome": false
+      },
+      "jaileduser": {
+        "pgrp": "cubs",
+        "home": "/home/ftp",
+        "sharedhome": false
+      },
+      "admin": {
+        "pgrp": "security",
+        "home": "/home",
+        "sharedhome": false,
+        "groups": [
+            "admin"
+        ]
+      },
+      "menu": [
+        "select_user",
+        "change_account_detail",
+        "change_account_expire",
+        "unselect_user",
+        "view_all_users",
+        "create_user_account",
+        "view_account_detail",
+        "delete_account"
+      ]
+    }
+
+The accepted "menu" items are currently:
+
+=over 4
+
+=item C<change_account_detail>
+
+Change User Account Details
+
+=item C<change_account_expire>
+
+Change User Account Password Expiry
+
+=item C<create_admin_account>
+
+Create Admin Account
+
+=item C<create_jailed_account>
+
+Create Client Account
+
+=item C<create_user_account>
+
+Create User Account
+
+=item C<delete_account>
+
+Remove User Account
+
+=item C<quit>
+
+Exit
+
+=item C<reset_password>
+
+Reset Password and Unlock Account
+
+=item C<select_user>
+
+Select User
+
+=item C<unlock_account>
+
+Unlock Account Without Resetting Password
+
+=item C<unselect_user>
+
+Unselect User
+
+=item C<view_account_detail>
+
+View User Account Details
+
+=item C<view_all_users>
+
+View All Users
+
+=back
+
+=head1 LICENSE
+
+Copyright © 2015 Taylor C. Richberger <taywee@gmx.com>
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.

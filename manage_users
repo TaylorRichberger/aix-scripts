@@ -19,7 +19,7 @@ sub change_account_detail_linux;
 sub change_account_expire;
 sub change_account_expire_linux;
 sub create_admin_account;
-sub create_sftp_account_linux;
+sub create_jailed_account_linux;
 sub create_user_account;
 sub delete_account;
 sub get_users;
@@ -62,7 +62,7 @@ sub main {
         change_account_detail => 'Change User Account Details',
         change_account_expire => 'Change User Account Password Expiry',
         create_admin_account => 'Create Admin Account',
-        create_sftp_account => 'Create Client Account',
+        create_jailed_account => 'Create Jailed Account',
         create_user_account => 'Create User Account',
         delete_account => 'Remove User Account',
         quit => 'Exit',
@@ -104,7 +104,6 @@ sub main {
         my $routine = $prompt->menu(@routines);
 
         dispatch($routine, \%data, $config);
-        pause();
     }
 }
 
@@ -114,7 +113,7 @@ sub dispatch {
         change_account_detail => {AIX => \&change_account_detail_aix, Linux => \&change_account_detail_linux},
         change_account_expire => {Linux => \&change_account_expire_linux},
         create_admin_account => {DEFAULT => \&create_admin_account},
-        create_sftp_account => {Linux => \&create_sftp_account_linux},
+        create_jailed_account => {Linux => \&create_jailed_account_linux},
         create_user_account => {DEFAULT => \&create_user_account},
         delete_account => {DEFAULT => \&delete_account},
         reset_password => {AIX => \&reset_password_aix, Linux => \&reset_password_linux},
@@ -153,6 +152,8 @@ sub dispatch {
         {
             $dispatch{$function}->{DEFAULT}->($data, $config);
         }
+
+        pause();
     }
 }
 
@@ -837,7 +838,7 @@ sub create_admin_account {
     print("\n\nAccount creation complete.\n");
 }
 
-sub create_sftp_account_linux {
+sub create_jailed_account_linux {
     my ($data, $config) = @_;
     my $correct = 0;
     my ($username, $fullname, $phone, $location, $business);
@@ -869,25 +870,25 @@ sub create_sftp_account_linux {
 
     my @opts;
     my $homedir;
-    if ($config->{ftpuser}->{sharedhome})
+    if ($config->{jaileduser}->{sharedhome})
     {
-        $homedir = $config->{ftpuser}->{home};
+        $homedir = $config->{jaileduser}->{home};
         push(@opts, ['d', $homedir]);
     } else
     {
-        $homedir = "$config->{ftpuser}->{home}/$username";
+        $homedir = "$config->{jaileduser}->{home}/$username";
         push(@opts, ['d', $homedir]);
         push(@opts, ['m']);
     }
 
-    if (exists($config->{ftpuser}->{groups}))
+    if (exists($config->{jaileduser}->{groups}))
     {
-        push(@opts, ['G', join(',', @{$config->{ftpuser}->{groups}})]);
+        push(@opts, ['G', join(',', @{$config->{jaileduser}->{groups}})]);
     }
 
-    my $ftpgrp = $config->{ftpuser}->{pgrp};
+    my $jailedgrp = $config->{jaileduser}->{pgrp};
 
-    push(@opts, ['g', $ftpgrp]);
+    push(@opts, ['g', $jailedgrp]);
     push(@opts, ['c', "$fullname,$phone,$location,$business,USER,USER"]);
     push(@opts, ['s', '/sbin/nologin']);
     push(@opts, $username);
@@ -895,26 +896,24 @@ sub create_sftp_account_linux {
 
     system('useradd ' . buildopts(@opts));
 
-
-    system('useradd ' . buildopts(@opts));
-    system('chown ' . buildopts("root:$ftpgrp", $homedir));
+    system('chown ' . buildopts("root:$jailedgrp", $homedir));
     system('chmod ' . buildopts(755, $homedir));
 
     my $filesdir = "$homedir/files";
 
     system('mkdir ' . buildopts($filesdir));
-    system('chown ' . buildopts("$username:$ftpgrp", $filesdir));
+    system('chown ' . buildopts("$username:$jailedgrp", $filesdir));
     system('chmod ' . buildopts(700, $filesdir));
     system('setfacl ' . buildopts(['m', "u:$username:rwx"], $filesdir));
     system('setfacl ' . buildopts(['d'], ['m', "u:$username:rwx"], $filesdir));
-    system('setfacl ' . buildopts(['m', "g:$ftpgrp:rwx"], $filesdir));
-    system('setfacl ' . buildopts(['d'], ['m', "g:$ftpgrp:rwx"], $filesdir));
+    system('setfacl ' . buildopts(['m', "g:$jailedgrp:rwx"], $filesdir));
+    system('setfacl ' . buildopts(['d'], ['m', "g:$jailedgrp:rwx"], $filesdir));
     system('setfacl ' . buildopts(['m', "g:$config->{admin}->{group}:rwx"], $filesdir));
     system('setfacl ' . buildopts(['d'], ['m', "g:$config->{admin}->{group}:rwx"], $filesdir));
 
     system("passwd $username");
 
-    print("\n\nSFTP account creation complete.\n");
+    print("Jailed account creation complete.\n");
 }
 
 sub delete_account {
@@ -967,3 +966,132 @@ sub quit {
     my ($data, $config) = @_;
     $config->{exit} = 1;
 }
+
+=pod
+
+=encoding utf-8
+
+=head1 NAME
+
+manage_users
+
+=head1 SYNOPSIS
+
+# manage_users
+
+$ sudo manage_users
+
+=head1 DESCRIPTION
+
+This script is used to manage users in a simple cross-platform way across AIX
+and Linux.  It is built to be menu-driven, and relies on a config file
+(currently hard-coded to be /etc/manage_users.json) to define the menu to be
+used.
+
+An example config file follows:
+
+    {
+      "OS": "Linux",
+      "user": {
+        "pgrp": "users",
+        "home": "/home",
+        "sharedhome": false
+      },
+      "jaileduser": {
+        "pgrp": "cubs",
+        "home": "/home/ftp",
+        "sharedhome": false
+      },
+      "admin": {
+        "pgrp": "security",
+        "home": "/home",
+        "sharedhome": false,
+        "groups": [
+            "admin"
+        ]
+      },
+      "menu": [
+        "select_user",
+        "change_account_detail",
+        "change_account_expire",
+        "unselect_user",
+        "view_all_users",
+        "create_user_account",
+        "view_account_detail",
+        "delete_account"
+      ]
+    }
+
+The accepted "menu" items are currently:
+
+=over 4
+
+=item C<change_account_detail>
+
+Change User Account Details
+
+=item C<change_account_expire>
+
+Change User Account Password Expiry
+
+=item C<create_admin_account>
+
+Create Admin Account
+
+=item C<create_jailed_account>
+
+Create Client Account
+
+=item C<create_user_account>
+
+Create User Account
+
+=item C<delete_account>
+
+Remove User Account
+
+=item C<quit>
+
+Exit
+
+=item C<reset_password>
+
+Reset Password and Unlock Account
+
+=item C<select_user>
+
+Select User
+
+=item C<unlock_account>
+
+Unlock Account Without Resetting Password
+
+=item C<unselect_user>
+
+Unselect User
+
+=item C<view_account_detail>
+
+View User Account Details
+
+=item C<view_all_users>
+
+View All Users
+
+=back
+
+=head1 LICENSE
+
+Copyright © 2015 Taylor C. Richberger <taywee@gmx.com>
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
