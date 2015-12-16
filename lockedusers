@@ -7,7 +7,10 @@ sub main;
 sub clear;
 sub pause;
 sub buildopts;
-sub parsestanzas;
+sub readstanzafile($);
+sub readstanzafileheader($);
+sub writestanzafile($$\%);
+sub stanzastring($\%);
 
 sub list_locked_users;
 sub unlock_user;
@@ -22,7 +25,7 @@ sub main {
         \&unlock_all, ['Unlock All Users', 'a'],
         0, ['Quit', 'q']
     );
-    my $prompt = Term::Menu->new(beforetext => "Manage Locked Users", aftertext=> "Choose an option: ");
+    my $prompt = Term::Menu->new(beforetext => 'Manage Locked Users', aftertext => ' > ');
 
     while (1)
     {
@@ -38,26 +41,29 @@ sub main {
 
 sub list_locked_users
 {
-    my %user = parsestanzas('/etc/security/user');
-    my %passwd = parsestanzas('/etc/security/lastlog');
-    for my $username (keys(%passwd))
+    clear();
+
+    my %user = readstanzafile('/etc/security/user');
+    my %lastlog = readstanzafile('/etc/security/lastlog');
+
+    # Make a full list of users
+    my %userlist;
+    @userlist{keys(%user)} = ();
+    @userlist{keys(%lastlog)} = ();
+
+    my @table;
+    for my $username (keys(%userlist))
     {
-        if (exists($user{$username}))
-        {
-            my %newhash = (%{$user{$username}}, %{$passwd{$username}});
-            $user{$username} = \%newhash;
-        } else
-        {
-            $user{$username} = $passwd{$username};
-        }
-    }
-    my @body;
-    while (my ($username, $data) = each(%user))
-    {
+        next if ($username eq 'default');
+
+        my $user = $user{$username};
+        my $lastlog = $lastlog{$username};
+
         my $loginretries;
-        if (exists($data->{loginretries}))
+
+        if (exists($user->{loginretries}))
         {
-            $loginretries = $data->{loginretries};
+            $loginretries = $user->{loginretries};
         } elsif (exists($user{default}->{loginretries}))
         {
             $loginretries = $user{default}->{loginretries};
@@ -65,31 +71,195 @@ sub list_locked_users
         {
             $loginretries = 0;
         }
-        my $accountlocked = exists($data->{account_locked}) ? $data->{account_locked} eq 'true' : 0;
 
-        my $loginfailures = exists($data->{unsuccessful_login_count}) ? $data->{unsuccessful_login_count} : 0;
+        my $accountlocked;
 
-        if ($username ne 'default' and (($loginretries > 0 and $loginfailures >= $loginretries) or $accountlocked))
+        if (exists($user->{account_locked}))
         {
-            push(@body, [$username, $loginfailures, $loginretries, $accountlocked ? 'true' : 'false']);
+            $accountlocked = $user->{account_locked};
+        } elsif (exists($user{default}->{account_locked}))
+        {
+            $accountlocked = $user{default}->{account_locked};
+        } else
+        {
+            $accountlocked = 'false';
+        }
+
+        # Set $accountlocked to be a boolean
+        $accountlocked = $accountlocked eq 'true';
+
+        my $loginfailures = exists($lastlog->{unsuccessful_login_count}) ? $lastlog->{unsuccessful_login_count} : 0;
+
+        if (($loginretries > 0 and $loginfailures >= $loginretries) or $accountlocked)
+        {
+            push(@table, [$username, $loginfailures, $loginretries, $accountlocked ? 'true' : 'false']);
         }
     }
+
     Term::Menu->new()->table(
         ['Username', 'Failed Login Count', 'Allowed retries', 'Account Locked'],
-        \@body
+        \@table
     );
+
     pause();
 }
 
 sub unlock_user
 {
+    clear();
+
+    my %user = readstanzafile('/etc/security/user');
+    my $userheader = readstanzafileheader('/etc/security/user');
+    my %lastlog = readstanzafile('/etc/security/lastlog');
+    my $lastlogheader = readstanzafileheader('/etc/security/lastlog');
+
+    # Make a full list of users
+    my %userlist;
+    @userlist{keys(%user)} = ();
+    @userlist{keys(%lastlog)} = ();
+
+    my @menu;
+    my $i = 0;
+    for my $username (keys(%userlist))
+    {
+        next if ($username eq 'default');
+
+        my $user = $user{$username};
+        my $lastlog = $lastlog{$username};
+
+        my $loginretries;
+
+        if (exists($user->{loginretries}))
+        {
+            $loginretries = $user->{loginretries};
+        } elsif (exists($user{default}->{loginretries}))
+        {
+            $loginretries = $user{default}->{loginretries};
+        } else
+        {
+            $loginretries = 0;
+        }
+
+        my $accountlocked;
+
+        if (exists($user->{account_locked}))
+        {
+            $accountlocked = $user->{account_locked};
+        } elsif (exists($user{default}->{account_locked}))
+        {
+            $accountlocked = $user{default}->{account_locked};
+        } else
+        {
+            $accountlocked = 'false';
+        }
+
+        # Set $accountlocked to be a boolean
+        $accountlocked = $accountlocked eq 'true';
+
+        my $loginfailures = exists($lastlog->{unsuccessful_login_count}) ? $lastlog->{unsuccessful_login_count} : 0;
+
+        if (($loginretries > 0 and $loginfailures >= $loginretries) or $accountlocked)
+        {
+            push(@menu, {user => $user, lastlog => $lastlog});
+            push(@menu, [$username, ++$i]);
+        }
+    }
+
+    push(@menu, 0);
+    push(@menu, ['Cancel', 0]);
+
+    my $selection = Term::Menu->new(beforetext => 'Select a user to unlock', aftertext => ' > ')->menu(@menu);
+
+    if ($selection)
+    {
+        $selection->{lastlog}->{unsuccessful_login_count} = 0;
+        $selection->{user}->{account_locked} = 'false';
+
+        writestanzafile('/etc/security/user', $userheader, %user);
+        writestanzafile('/etc/security/lastlog', $lastlogheader, %lastlog);
+    }
+
+    pause();
 }
+
 sub unlock_all
 {
+    clear();
+
+    my %user = readstanzafile('/etc/security/user');
+    my $userheader = readstanzafileheader('/etc/security/user');
+    my %lastlog = readstanzafile('/etc/security/lastlog');
+    my $lastlogheader = readstanzafileheader('/etc/security/lastlog');
+
+    # Make a full list of users
+    my %userlist;
+    @userlist{keys(%user)} = ();
+    @userlist{keys(%lastlog)} = ();
+
+    my %unlockedusers;
+    for my $username (keys(%userlist))
+    {
+        next if ($username eq 'default');
+
+        my $user = $user{$username};
+        my $lastlog = $lastlog{$username};
+
+        my $loginretries;
+
+        if (exists($user->{loginretries}))
+        {
+            $loginretries = $user->{loginretries};
+        } elsif (exists($user{default}->{loginretries}))
+        {
+            $loginretries = $user{default}->{loginretries};
+        } else
+        {
+            $loginretries = 0;
+        }
+
+        my $accountlocked;
+
+        if (exists($user->{account_locked}))
+        {
+            $accountlocked = $user->{account_locked};
+        } elsif (exists($user{default}->{account_locked}))
+        {
+            $accountlocked = $user{default}->{account_locked};
+        } else
+        {
+            $accountlocked = 'false';
+        }
+
+        # Set $accountlocked to be a boolean
+        $accountlocked = $accountlocked eq 'true';
+
+        my $loginfailures = exists($lastlog->{unsuccessful_login_count}) ? $lastlog->{unsuccessful_login_count} : 0;
+
+        if ($loginretries > 0 and $loginfailures >= $loginretries)
+        {
+            $lastlog->{unsuccessful_login_count} = 0;
+            $unlockedusers{$username} = undef;
+        }
+
+        if ($accountlocked)
+        {
+            $user->{account_locked} = 'false';
+            $unlockedusers{$username} = undef;
+        }
+    }
+
+    writestanzafile('/etc/security/user', $userheader, %user);
+    writestanzafile('/etc/security/lastlog', $lastlogheader, %lastlog);
+
+    Term::Menu->new()->table(
+        ['The following users were unlocked'],
+        [map({[$_]} keys(%unlockedusers))]
+    );
+    pause();
 }
 
 sub clear {
-    system("clear");
+    system('clear');
 }
 
 sub pause {
@@ -135,7 +305,7 @@ sub buildopts {
     return join(' ', @outstrings);
 }
 
-sub parsestanzas {
+sub readstanzafile($) {
     my $filename = $_[0];
     my %output;
     my $stanza = 'default';
@@ -147,7 +317,7 @@ sub parsestanzas {
         if ($line =~ m/^([^\s#\*]+):\s*$/)
         {
             $stanza = $1;
-        } elsif ($line =~ m/^\s+(\S+)\s*=\s*(.*)$/)
+        } elsif ($line =~ m/^\s+([^\s#\*]+)\s*=\s*(.*)$/)
         {
             $output{$stanza}{$1} = $2;
         }
@@ -156,118 +326,80 @@ sub parsestanzas {
     return %output;
 }
 
+sub readstanzafileheader($) {
+    my $filename = $_[0];
+    my @output;
+
+    open(my $file, '<', $filename);
+    while (my $line = <$file>)
+    {
+        chomp($line);
+        if (($line =~ m/^([^\s#\*]+):\s*$/) or ($line =~ m/^\s+([^\s#\*]+)\s*=\s*(.*)$/))
+        {
+            last;
+        } elsif(length($line) > 0)
+        {
+            push(@output, $line);
+        }
+    }
+    # Because the file is repeatedly written and read, we want to make sure it's fully flushed.
+    close($file);
+
+    return join("\n", @output);
+}
+
+sub writestanzafile($$\%) {
+    my ($filename, $header, $stanzas) = @_;
+
+    open(my $file, '>', $filename);
+
+    print($file "$header\n\n");
+
+    if (exists($stanzas->{default}))
+    {
+        print($file stanzastring('default', %{$stanzas->{default}}));
+        print($file "\n");
+    }
+    while (my ($username, $hash) = each(%{$stanzas}))
+    {
+        next if ($username eq 'default');
+        print($file stanzastring($username, %{$hash}));
+        print($file "\n");
+    }
+    # Because the file is repeatedly written and read, we want to make sure it's fully flushed.
+    close($file);
+}
+
+sub stanzastring($\%) {
+    my ($name, $hash) = @_;
+
+    my $output = "$name:\n";
+
+    while (my ($key, $value) = each(%{$hash}))
+    {
+        $output .= "\t$key = $value\n";
+    }
+
+    return $output;
+}
+
 =pod
 
 =encoding utf-8
 
 =head1 NAME
 
-manage_users
+lockedusers
 
 =head1 SYNOPSIS
 
-# manage_users
+# lockedusers
 
-$ sudo manage_users
+$ sudo lockedusers
 
 =head1 DESCRIPTION
 
-This script is used to manage users in a simple cross-platform way across AIX
-and Linux.  It is built to be menu-driven, and relies on a config file
-(currently hard-coded to be /etc/manage_users.json) to define the menu to be
-used.
-
-An example config file follows:
-
-    {
-      "OS": "Linux",
-      "user": {
-        "pgrp": "users",
-        "home": "/home",
-        "sharedhome": false
-      },
-      "jaileduser": {
-        "pgrp": "cubs",
-        "home": "/home/ftp",
-        "sharedhome": false
-      },
-      "admin": {
-        "pgrp": "security",
-        "home": "/home",
-        "sharedhome": false,
-        "groups": [
-            "admin"
-        ]
-      },
-      "menu": [
-        "select_user",
-        "change_account_detail",
-        "change_account_expire",
-        "unselect_user",
-        "view_all_users",
-        "create_user_account",
-        "view_account_detail",
-        "delete_account"
-      ]
-    }
-
-The accepted "menu" items are currently:
-
-=over 4
-
-=item C<change_account_detail>
-
-Change User Account Details
-
-=item C<change_account_expire>
-
-Change User Account Password Expiry
-
-=item C<create_admin_account>
-
-Create Admin Account
-
-=item C<create_jailed_account>
-
-Create Client Account
-
-=item C<create_user_account>
-
-Create User Account
-
-=item C<delete_account>
-
-Remove User Account
-
-=item C<quit>
-
-Exit
-
-=item C<reset_password>
-
-Reset Password and Unlock Account
-
-=item C<select_user>
-
-Select User
-
-=item C<unlock_account>
-
-Unlock Account Without Resetting Password
-
-=item C<unselect_user>
-
-Unselect User
-
-=item C<view_account_detail>
-
-View User Account Details
-
-=item C<view_all_users>
-
-View All Users
-
-=back
+This is a simple script used to unlock user accounts.
 
 =head1 LICENSE
 

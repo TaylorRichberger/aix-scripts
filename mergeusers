@@ -264,7 +264,7 @@ sub readstanzas($)
         {
             chomp($line);
             # Skip lines that are comments
-            next if ($line =~ m/^\s*#/);
+            next if ($line =~ m/^\s*[#\*]/);
             # Skip blank lines (and whitespace lines)
             next if ($line =~ m/^\s*$/);
 
