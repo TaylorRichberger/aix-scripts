@@ -2,6 +2,7 @@
 use warnings;
 use strict;
 use Term::Menu;
+use Fcntl qw(:flock SEEK_END);
 
 sub main;
 sub clear;
@@ -311,6 +312,7 @@ sub readstanzafile($) {
     my $stanza = 'default';
 
     open(my $file, '<', $filename);
+    flock($file, LOCK_SH) or die("Could not lock file $filename - $!");
     while (my $line = <$file>)
     {
         chomp($line);
@@ -322,6 +324,9 @@ sub readstanzafile($) {
             $output{$stanza}{$1} = $2;
         }
     }
+    flock($file, LOCK_UN) or die("Could not unlock file $filename - $!");
+    # Because the file is repeatedly written and read, we want to make sure it's fully flushed.
+    close($file);
 
     return %output;
 }
@@ -331,6 +336,7 @@ sub readstanzafileheader($) {
     my @output;
 
     open(my $file, '<', $filename);
+    flock($file, LOCK_SH) or die("Could not lock file $filename - $!");
     while (my $line = <$file>)
     {
         chomp($line);
@@ -342,6 +348,7 @@ sub readstanzafileheader($) {
             push(@output, $line);
         }
     }
+    flock($file, LOCK_UN) or die("Could not unlock file $filename - $!");
     # Because the file is repeatedly written and read, we want to make sure it's fully flushed.
     close($file);
 
@@ -352,6 +359,7 @@ sub writestanzafile($$\%) {
     my ($filename, $header, $stanzas) = @_;
 
     open(my $file, '>', $filename);
+    flock($file, LOCK_EX) or die("Could not lock file $filename - $!");
 
     print($file "$header\n\n");
 
@@ -366,6 +374,7 @@ sub writestanzafile($$\%) {
         print($file stanzastring($username, %{$hash}));
         print($file "\n");
     }
+    flock($file, LOCK_UN) or die("Could not unlock file $filename - $!");
     # Because the file is repeatedly written and read, we want to make sure it's fully flushed.
     close($file);
 }
