@@ -123,7 +123,16 @@ sub markretains($$$$\%\%)
         # Kick out if there are no earlier files, otherwise this will loop
         # forever.  Note that this script will run horribly if you have bum
         # files that say they are hundreds of years old or anything like that
-        last if ($current < $earliest);
+        if ($current < $earliest)
+        {
+
+            # If we went past the earliest without getting all files, just mark the earliest to keep regardless
+            if (($totalkeep > $keeps) && exists($files->{$earliest->year}{$earliest->mon}{$earliest->mday}))
+            {
+                $retain->{$files->{$earliest->year}{$earliest->mon}{$earliest->mday}} = undef;
+            }
+            last;
+        }
     }
 }
 
