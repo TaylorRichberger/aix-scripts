@@ -1,0 +1,198 @@
+#!/usr/bin/perl
+# Copyright © 2016 Taylor C. Richberger <tcr@absolute-performance.com>,
+# Absolute Performance, Inc.
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+use warnings;
+use strict;
+
+use Pod::Usage;
+use Getopt::Std;
+use Time::Piece;
+
+sub markretains($$$$\%\%);
+
+sub main;
+exit main();
+
+sub main
+{
+    my %opts = (
+        w => 0,
+        m => 0,
+        d => 0,
+    );
+    if (not getopts('w:m:d:hk', \%opts))
+    {
+        pod2usage({-verbose => 1, -exitval => 1, -output => \*STDERR});
+    }
+    if ($opts{h})
+    {
+        pod2usage({-verbose => 2, -exitval => 1, -output => \*STDOUT});
+    }
+    if (scalar(@ARGV) != 1)
+    {
+        pod2usage({-verbose => 1, -exitval => 1, -output => \*STDERR});
+    }
+    my $format = $ARGV[0];
+    my %files;
+    my %all;
+    my $earliest = localtime;
+    my $latest = localtime;
+    while (my $name = <STDIN>)
+    {
+        chomp($name);
+
+        # Strptime dies if it gets an unparsable string
+        eval {
+            my $time = Time::Piece->strptime($name, $format);
+            if ($time)
+            {
+                if ($time < $earliest)
+                {
+                    $earliest = $time;
+                }
+                if ($time > $latest)
+                {
+                    $latest = $time;
+                }
+                # Because days are the granularity, this is the easiest way to handle this
+                $files{$time->year}{$time->mon}{$time->mday} = $name;
+                $all{$name} = undef;
+            }
+        };
+    }
+    my %retain;
+    # The basic logic is that it marks files from %files to retain into the
+    # %retain hash.  These are checked against %all to get total keeps and
+    # removes
+    markretains($opts{d}, 1, $earliest, $latest, %files, %retain);
+    markretains($opts{w}, 7, $earliest, $latest, %files, %retain);
+    markretains($opts{m}, 28, $earliest, $latest, %files, %retain);
+    my @removes;
+    my @keeps;
+    for my $name (keys(%all))
+    {
+        if (exists($retain{$name}))
+        {
+            push(@keeps, $name);
+        } else
+        {
+            push(@removes, $name);
+        }
+    }
+    @removes = sort(@removes);
+    @keeps = sort(@keeps);
+    # Print all of either @keeps or @removes
+    for my $name ($opts{k} ? @keeps : @removes)
+    {
+        print("$name\n");
+    }
+    return 0;
+}
+
+sub markretains($$$$\%\%)
+{
+    my ($totalkeep, $spacing, $earliest, $latest, $files, $retain) = @_;
+    my $current = $latest;
+    my $keeps = 0;
+    my $day = 60 * 60 * 24;
+    while ($totalkeep > $keeps)
+    {
+        # Go back by $spacing days if a file is found, otherwise iterate back
+        # until you find the file you want
+        if (exists($files->{$current->year}{$current->mon}{$current->mday}))
+        {
+            ++$keeps;
+            $retain->{$files->{$current->year}{$current->mon}{$current->mday}} = undef;
+            $current -= $day * $spacing;
+        } else
+        {
+            $current -= $day;
+        }
+        # Kick out if there are no earlier files, otherwise this will loop
+        # forever.  Note that this script will run horribly if you have bum
+        # files that say they are hundreds of years old or anything like that
+        last if ($current < $earliest);
+    }
+}
+
+=pod
+
+=encoding utf-8
+
+=head1 NAME
+
+retain
+
+=head1 SYNOPSIS
+
+migratekeys [OPTIONS] {FILEFORMAT}
+
+=head1 OPTIONS
+
+=over 16
+
+=item C<-d> I<amount>
+
+Number of dailies to keep
+
+=item C<-w> I<amount>
+
+Number of weeklies to keep
+
+=item C<-m> I<amount>
+
+Number of monthlies to keep
+
+=item C<-h>
+
+Show a help menu
+
+=item C<-k>
+
+Output the items to keep, rather than the ones to remove
+
+=back
+
+=head1 ARGUMENTS
+
+=over 16
+
+=item C<fileformat>
+
+A format passed to match the file with timestamp parts against for strptime
+
+=back
+
+=head1 DESCRIPTION
+
+Take a list of files in standard input, determine which ones are to be deleted
+against the retention scheme, and output those to standard output
+
+=head1 LICENSE
+
+Copyright © 2016 Taylor C. Richberger <tcr@absolute-performance.com>,
+Absolute Performance, Inc.
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
