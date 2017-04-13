@@ -122,14 +122,14 @@ sub main {
     }
     print("Setting all passwords for new users\n");
 
-    for my $passwordline (map({join(':', $_->{name}, $_->{shadow}->{password})} grep({defined($_->{shadow}->{password}) and $_->{shadow}->{password} ne ''} @newusers))) {
-        printf("Setting password: %s\n", $passwordline);
+    for my $user (grep({defined($_->{shadow}->{password}) and $_->{shadow}->{password} ne ''} @newusers)) {
+        my $passwordline = join(':', $user->{name}, $user->{shadow}->{password});
+        printf("Setting password for user %s\n", $user->{name});
         if (not $debug) {
             open(my $pipe, '|-', 'chpasswd -e');
-            print($pipe $passwordline);
-            print($pipe "\n");
+            print($pipe "$passwordline\n");
             if (not close($pipe)) {
-                panic('Could not set passwords for new users');
+                panic("Could not set passwords for user $user->{name}");
             }
         }
     }
@@ -350,20 +350,11 @@ Put into debug mode and execute no commands
 
 =head1 DESCRIPTION
 
-This simply merges the source host's users into the current host's users,
-outputting the files into the CWD (/etc/security/passwd is output as `shadow`).
+This imports the source hosts users and groups, and tries to create them on the
+local host.  It creates backups of /etc/passwd, /etc/group, and
+/etc/security/passwd, and restores them if anything goes awry.
 
-This attempts to preserve UIDs.  It skips usernames that already exist in the
-destination.  If a UID is used by a user in the destination that is not the
-same name as the source user, an error is thrown.
-
-It will try to create the group in question with the same gid, and similarly
-throw an error otherwise (if the gid is not significant, you can manually
-create it and retry).
-
-This will only work on AIX systems, unless you can find another system that
-uses /etc/security/passwd as the shadow file in the same stanza format as
-AIX's.
+This program does its thing through mkuser, mkgroup, and chpasswd.
 
 =head1 LICENSE
 
