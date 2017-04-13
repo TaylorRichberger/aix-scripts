@@ -1,0 +1,375 @@
+#!/usr/bin/perl
+use warnings;
+use strict;
+
+our $VERSION = '0.0.1';
+
+use Getopt::Long;
+use Pod::Usage;
+
+sub main;
+
+# Executes command through system.  First argument should be a "debug" switch.
+# If "debug" switch is set, executes nothing and instead just prints out
+# command.
+sub execute;
+
+# Die and restore files
+sub panic;
+
+# readpasswd($path)
+#
+# Read in specified passwd file into an array of hashes, which is returned by
+# reference
+#
+# Hash keys: name, password, uid, pgrp, gecos, dir, shell
+#
+# $path: path to the file
+# return: [\%userhash, ...]
+sub readpasswd($);
+
+# readgroup($path)
+#
+# Read in specified group file into an array of hashes, which is returned by
+# reference.  The "members" item is an array reference, pointing to an array of
+# users.
+# Hash keys: name, password, gid, members
+# 
+# $path: path to the file
+# return: [\%grouphash, ...]
+sub readgroup($);
+
+# readstanzas($path)
+#
+# Read in specified stanza-formatted file into a hash, which is returned by
+# reference.  Each hash key is a stanza name, with the value being a reference
+# to another hash.  The hash keys align to the attribute keys literally.
+#
+# $path: path to the file
+# return: {stanza => {attrib => value, ...}, ...}
+sub readstanzas($);
+
+# getusers($passwd, $group, $shadow)
+#
+# Get users and groups.
+#
+# All referenced groups in the user hash are by name, not gid.
+#
+# userhash has fields name, password (the passwd file password), shadow (the shadow attributes), pgrp, groups, gecos, dir, shell.
+#
+# $passwd: path to passwd file
+# $group: path to group file
+# $shadow: path to shadow file (/etc/security/passwd)
+# return: ({username => \%user, ...}, {groupname => gid, ...})
+sub getusers($$$);
+
+exit main();
+
+sub main {
+    Getopt::Long::Configure('bundling', 'no_auto_abbrev', 'gnu_compat', 'no_ignore_case', 'auto_version');
+    my $groupfile;
+    my $passwdfile;
+    my $shadowfile;
+    my $debug = 0;
+    my $help = 0;
+
+    if (not GetOptions(
+        'group|g=s' => \$groupfile,
+        'passwd|p=s' => \$passwdfile,
+        'shadow|s=s' => \$shadowfile,
+        'debug|d!' => \$debug,
+        'help|h' => \$help) or
+        not (defined($groupfile)
+                and defined($passwdfile)
+                and defined($shadowfile))) {
+        pod2usage({-verbose => 1, -exitval => 1, -output => \*STDERR});
+    }
+    if ($help) {
+        pod2usage({-verbose => 1, -exitval => 0, -output => \*STDOUT});
+    }
+
+    execute($debug, 'cp', '/etc/passwd', "/etc/passwd.$$.bak");
+    execute($debug, 'cp', '/etc/group', "/etc/group.$$.bak");
+    execute($debug, 'cp', '/etc/security/passwd', "/etc/security/passwd.$$.bak");
+
+    my ($users, $groups) = getusers($passwdfile, $groupfile, $shadowfile);
+
+    # Create groups if needed
+    setgrent();
+    # Create groups that don't exist
+    for my $group (grep({not defined(getgrnam($_))} keys(%$groups))) {
+        printf("Creating group %s\n", $group);
+        if (execute($debug, 'mkgroup', $group) != 0) {
+            panic("Could not create group $group");
+        }
+    }
+
+    setpwent();
+    my @newusers = grep({not defined(getpwnam($_->{name}))} values(%$users));
+
+    # Setup users that don't exist
+    for my $user (@newusers) {
+        printf("Creating user %s\n", $user->{name});
+        if (execute($debug, 'mkuser',
+                join('=', 'pgrp', $user->{pgrp}),
+                join('=', 'groups', join(',', @{$user->{groups}})),
+                join('=', 'gecos', $user->{gecos}),
+                join('=', 'home', $user->{dir}),
+                join('=', 'shell', $user->{shell}),
+                $user->{name}) != 0) {
+            panic("Could not create user $user->{name}");
+        }
+    }
+    print("Setting all passwords for new users\n");
+
+    for my $passwordline (map({join(':', $_->{name}, $_->{shadow}->{password})} grep({defined($_->{shadow}->{password}) and $_->{shadow}->{password} ne ''} @newusers))) {
+        printf("Setting password: %s\n", $passwordline);
+        if (not $debug) {
+            open(my $pipe, '|-', 'chpasswd -e');
+            print($pipe $passwordline);
+            print($pipe "\n");
+            if (not close($pipe)) {
+                panic('Could not set passwords for new users');
+            }
+        }
+    }
+    print("All successful.\n");
+    return 0;
+}
+
+sub execute {
+    my ($debug, @command) = @_;
+    printf("> %s\n", join(' ', @command));
+    if ($debug) {
+        return 0;
+    } else {
+        return system(@command);
+    }
+}
+
+sub panic {
+    print(STDERR 'FATAL: ');
+    print(STDERR @_);
+    print(STDERR "\n");
+    execute(0, 'mv', "/etc/passwd.$$.bak", '/etc/passwd');
+    execute(0, 'mv', "/etc/group.$$.bak", '/etc/group');
+    execute(0, 'mv', "/etc/security/passwd.$$.bak", '/etc/security/passwd');
+    exit 1;
+}
+
+
+sub readpasswd($) {
+    my ($filename) = @_;
+    if (open(my $file, '<', $filename))
+    {
+        my @output;
+        while (my $line = <$file>)
+        {
+            chomp($line);
+            if (length($line) > 0)
+            {
+                my %entry;
+                ($entry{name}, $entry{password}, $entry{uid}, $entry{pgrp}, $entry{gecos}, $entry{dir}, $entry{shell}) = split(/:/, $line);
+                push(@output, \%entry);
+            }
+        }
+        return \@output;
+    } else
+    {
+        die("could not open $filename");
+    }
+}
+
+sub readgroup($)
+{
+    my ($filename) = @_;
+    if (open(my $file, '<', $filename))
+    {
+        my @output;
+        while (my $line = <$file>)
+        {
+            chomp($line);
+            if (length($line) > 0)
+            {
+                my %entry;
+                my $memberlist;
+                ($entry{name}, $entry{password}, $entry{gid}, $memberlist) = split(/:/, $line);
+                if (length($memberlist) > 0)
+                {
+                    my @members = split(/,/, $memberlist);
+                    $entry{members} = \@members;
+                } else
+                {
+                    $entry{members} = [];
+                }
+                push(@output, \%entry);
+            }
+        }
+        return \@output;
+    } else
+    {
+        die("could not open $filename");
+    }
+}
+
+sub readstanzas($)
+{
+    my ($filename) = @_;
+    if (open(my $file, '<', $filename))
+    {
+        my %output;
+
+        # Hash reference
+        my $entry = undef;
+        my $current = undef;
+        while (my $line = <$file>)
+        {
+            chomp($line);
+            # Skip lines that are comments
+            next if ($line =~ m/^\s*[#\*]/);
+            # Skip blank lines (and whitespace lines)
+            next if ($line =~ m/^\s*$/);
+
+            if ($line =~ m/^(\S+):/)
+            {
+                if (defined($current))
+                {
+                    $output{$current} = $entry;
+                }
+                $current = $1;
+                $entry = {};
+            } elsif ($line =~ m/^\s+(\S+)\s*=\s*(.*)/) # Take the line, and include comments if they are there, because it makes no difference.
+            {
+                $entry->{$1} = $2;
+            }
+        }
+        return \%output;
+    } else
+    {
+        die("could not open $filename");
+    }
+}
+
+sub getusers($$$)
+{
+    my ($passwdpath, $grouppath, $shadowpath) = @_;
+    my $userlist = readpasswd($passwdpath);
+    my $grouplist = readgroup($grouppath);
+    my $shadows = readstanzas($shadowpath);
+
+    # username -> user hash
+    my %users;
+
+    for my $user (@{$userlist})
+    {
+        my $name = $user->{name};
+        $users{$name} = $user;
+    }
+
+    # groupname -> gid
+    my %grouphash;
+
+    # gid -> groupname
+    my %rgrouphash;
+
+    # Push groups into the user hash
+    for my $group (@{$grouplist})
+    {
+        my $name = $group->{name};
+        my $gid = $group->{gid};
+        my $members = $group->{members};
+
+        $grouphash{$name} = $gid;
+        $rgrouphash{$gid} = $name;
+
+        for my $member (@{$members})
+        {
+            if (exists($users{$member}))
+            {
+                my $user = $users{$member};
+                if (not exists($user->{groups}))
+                {
+                    $user->{groups} = [];
+                }
+                push(@{$user->{groups}}, $name);
+            }
+        }
+    }
+
+    while (my ($name, $user) = each(%users))
+    {
+        if (exists($rgrouphash{$user->{pgrp}}))
+        {
+            $user->{pgrp} = $rgrouphash{$user->{pgrp}}
+        }
+        if (exists($shadows->{$name}))
+        {
+            $user->{shadow} = $shadows->{$name};
+        }
+    }
+    return (\%users, \%grouphash);
+}
+
+=pod
+
+=encoding utf-8
+
+=head1 NAME
+
+importusers
+
+=head1 SYNOPSIS
+
+importusers {B<options>}
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<-h>, B<--help>
+
+Show the help text.
+
+=item B<-g>, B<--group> I<group>
+
+The source host's /etc/group file
+
+=item B<-p>, B<--passwd> I<passwd>
+
+The source host's /etc/passwd file.
+
+=item B<-s>, B<--shadow> I<shadow>
+
+The source host's /etc/security/passwd file
+
+=item B<-d>, B<--debug>
+
+Put into debug mode and execute no commands
+
+=back
+
+=head1 DESCRIPTION
+
+This simply merges the source host's users into the current host's users,
+outputting the files into the CWD (/etc/security/passwd is output as `shadow`).
+
+This attempts to preserve UIDs.  It skips usernames that already exist in the
+destination.  If a UID is used by a user in the destination that is not the
+same name as the source user, an error is thrown.
+
+It will try to create the group in question with the same gid, and similarly
+throw an error otherwise (if the gid is not significant, you can manually
+create it and retry).
+
+This will only work on AIX systems, unless you can find another system that
+uses /etc/security/passwd as the shadow file in the same stanza format as
+AIX's.
+
+=head1 LICENSE
+
+Written by Taylor C. Richberger <tcr@absolute-performance.com>
+
+Copyright © 2017 Absolute Performance Inc <csteam@absolute-performance.com>.
+All rights reserved.
+This is proprietary software.
+No warranty, explicit or implicit, provided.
