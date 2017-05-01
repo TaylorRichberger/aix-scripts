@@ -1,0 +1,149 @@
+#!/usr/bin/perl
+use warnings;
+use strict;
+
+our $VERSION = '0.0.1';
+
+use Getopt::Long;
+use Pod::Usage;
+use POSIX;
+
+sub log;
+sub main;
+sub dircontains;
+
+exit main();
+
+sub main {
+    Getopt::Long::Configure('bundling', 'no_auto_abbrev', 'gnu_compat', 'no_ignore_case', 'auto_version');
+    my $backupdir;
+    my $monthlydir;
+    my $debug = 0;
+    my $help = 0;
+
+    if (not GetOptions(
+        'backupdir|b=s' => \$backupdir,
+        'monthlydir|m=s' => \$monthlydir,
+        'debug|d!' => \$debug,
+        'help|h' => \$help) or
+        not (defined($backupdir) and defined($monthlydir))) {
+        pod2usage({-verbose => 1, -exitval => 1, -output => \*STDERR});
+    } elsif ($help) {
+        pod2usage({-verbose => 1, -exitval => 0, -output => \*STDOUT});
+    }
+
+    my $execute = sub {
+        printf("> %s\n", join(' ', @_));
+        if ($debug) {
+            return 0;
+        } else {
+            return system(@_);
+        }
+    };
+
+    my @entries;
+
+    {
+        opendir(my $dir, $backupdir) or die("Can't open directory $backupdir: $!");
+        @entries = readdir($dir);
+    }
+
+    &log('Using directory set containing', join(', ', @entries));
+
+    my $latestbackupdir = (sort({$b cmp $a} 
+            grep({$_ =~ m/^\d{4}-\d{2}-01/ and dircontains("$backupdir/$_", 'data') and not -l "$backupdir/$_"} @entries))
+        )[0];
+
+    &log('Filtered to', $latestbackupdir, 'as a directory to use');
+
+    my $fullbackupdir = "$backupdir/$latestbackupdir";
+    my $fullmonthlydir = "$monthlydir/$latestbackupdir";
+
+    if ($execute->('mkdir', '-p', $fullmonthlydir) != 0) {
+        die("Could not create monthly directory");
+    }
+
+    {
+        &log('Copying non-data files from', $fullbackupdir, 'to', $fullmonthlydir);
+
+        opendir(my $dir, $fullbackupdir) or die("Can't open directory $fullbackupdir: $!");
+        while (my $file = readdir($dir)) {
+            next if ($file =~ m/^\.+$/ or $file eq 'data');
+            if ($execute->('cp', '-r', "$fullbackupdir/$file", "$fullmonthlydir/$file") != 0) {
+                die("Could not copy file $file");
+            }
+        }
+    }
+
+    &log('Tarring data');
+    if ($execute->("tar -cvf- -C \"$fullbackupdir\" data 2>\"$fullmonthlydir/data.list\" | gzip -c - > \"$fullmonthlydir/data.tar.gz\"") != 0) {
+        die("Could not tar data");
+    }
+
+    return 0;
+}
+
+sub dircontains {
+    my ($dirname, $contains) = @_;
+    opendir(my $dir, $dirname);
+    return scalar(grep({$_ eq $contains} readdir($dir)));
+}
+
+sub log {
+    printf("%s: %s\n", POSIX::strftime('%Y-%m-%d %H:%M:%S', localtime(time)), join(' ', @_));
+}
+
+=pod
+
+=encoding utf-8
+
+=head1 NAME
+
+backup_monthly
+
+=head1 SYNOPSIS
+
+backup_monthly {B<options>}
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<-h>, B<--help>
+
+Show the help text.
+
+=item B<-b>, B<--backupdir> I<backupdir>
+
+Select the backup dir of dailies to be considered
+
+=item B<-d>, B<--debug>
+
+Put into debug mode and execute no commands, but still do all calculations and
+print all messages.
+
+=item B<-m>, B<--monthlydir> I<monthlydir>
+
+Select the backup dir of monthlies, where the monthly should be dropped
+
+=back
+
+=head1 DESCRIPTION
+
+This program works very specifically.  It looks into the directory specified
+with backupdir, and trawls them for subdirectories containing a data directory
+(skipping symlinks in the process).  It then checks their names (expecting
+them to begin with %Y-%m-%d) and selects the latest one on the first day of the
+month.  In this way, it selects the latest first-of-month daily backup
+containing a /data directory.  It then creates a copy of the backup directory in
+the monthlydir, copying everything inside except for /data, which is compressed
+in through /bin/tar and /bin/gzip.
+
+=head1 LICENSE
+
+Written by Taylor C. Richberger <tcr@absolute-performance.com>
+
+Copyright © 2017 Absolute Performance Inc <csteam@absolute-performance.com>.
+All rights reserved.
+This is proprietary software.
+No warranty, explicit or implicit, provided.
