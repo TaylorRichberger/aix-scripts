@@ -54,6 +54,10 @@ sub main {
             grep({$_ =~ m/^\d{4}-\d{2}-01/ and dircontains("$backupdir/$_", 'data') and not -l "$backupdir/$_"} @entries))
         )[0];
 
+    if (not defined($latestbackupdir)) {
+        die("Could not find viable backup directory");
+    }
+
     &log('Filtered to', $latestbackupdir, 'as a directory to use');
 
     my $fullbackupdir = "$backupdir/$latestbackupdir";
@@ -76,7 +80,7 @@ sub main {
     }
 
     &log('Tarring data');
-    if ($execute->("tar -cvf- -C \"$fullbackupdir\" data 2>\"$fullmonthlydir/data.list\" | gzip -c - > \"$fullmonthlydir/data.tar.gz\"") != 0) {
+    if ($execute->("tar -cvf- -C \"$fullbackupdir\" data 2>\"$fullmonthlydir/data.list\" | gzip -c - >\"$fullmonthlydir/data.tar.gz\"") != 0) {
         die("Could not tar data");
     }
 
