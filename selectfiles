@@ -1,0 +1,98 @@
+#!/usr/bin/env perl
+# Copyright © 2017 Taylor C. Richberger <taywee@gmx.com>
+# This code is released under the license described in the LICENSE file
+use warnings;
+use strict;
+
+use Pod::Usage;
+use Getopt::Long;
+use Time::Piece;
+
+sub main;
+exit main();
+
+sub main
+{
+    Getopt::Long::Configure('bundling', 'no_auto_abbrev', 'gnu_compat', 'no_ignore_case', 'auto_version');
+    my $help = 0;
+    my $minage;
+    my $format;
+
+    if (not (GetOptions(
+        'format|f=s' => \$format,
+        'minage|m=f' => \$minage,
+        'help|h' => \$help) and defined($minage) and defined($format))) {
+        pod2usage({-verbose => 1, -exitval => 1, -output => \*STDERR});
+    } elsif ($help) {
+        pod2usage({-verbose => 1, -exitval => 0, -output => \*STDOUT});
+    }
+
+    my $minseconds = $minage * 24 * 60 * 60;
+    my $now = time;
+
+    while (<STDIN>) {
+        chomp($_);
+        for my $file (split(/\s+/m, $_)) {
+            eval {
+                my $time = Time::Piece->strptime($file, $format);
+                if ($now - $time->epoch > $minseconds) {
+                    print("$file\n");
+                }
+            };
+        }
+    }
+
+    return 0;
+}
+
+__END__
+
+=pod
+
+=encoding utf-8
+
+=head1 NAME
+
+selectfiles
+
+=head1 SYNOPSIS
+
+selectfiles [B<options>]
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<-h>, B<--help>
+
+Show the help text.
+
+=item B<-f>, B<--format> I<format>
+
+Time format to match in file.  No transformation will take place, so make sure
+timestamp is at beginning, or you preprocess the file list to have the timestamp
+at the beginning.  Entries not matching the format at all will be completely
+ignored.
+
+=item B<-m>, B<--minage> I<age>
+
+The minimum age, in days, that will match and be printed.
+
+=back
+
+=head1 DESCRIPTION
+
+This program takes a list of names in on standard input, and uses the format
+option (which is mandatory) and the minage option (which is also mandatory) to
+select and print out files older than a specific threshold.  This is used in
+particular for culling backup files.  Note that this does not perform any file
+tests, simply building a timestamp from the strings passed in, so it depends on
+a well-formed name, not timestamps (as you can't possibly be certain, in most
+cases, that your timestamp will actually match when your file/directory was
+created).
+
+=head1 COPYRIGHT
+
+Written by Taylor C. Richberger <tcr@absolute-performance.com>.
+
+This code is proprietary software
