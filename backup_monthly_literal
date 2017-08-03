@@ -1,0 +1,61 @@
+#!/bin/sh
+# Copyright © 2017 Taylor C. Richberger <taywee@gmx.com>
+# This code is proprietary
+
+set -e
+
+backupdir="/backups/$(hostname)_backup"
+monthlydir="$backupdir/old_backups"
+debug=
+
+log() {
+    echo "$(date +"%Y-%m-%d %H:%M:%S"): $*"
+}
+
+usage() {
+    cat <<HERE
+$0 [options]
+    Copies all directories matching a %Y-%m-%d_%H-%M datestamp for the last day
+    of the previous month into a target directory.
+
+    -h              Show this help
+    -b [backupdir]  Choose a backupdir, defaults to /backups/$(hostname)_backup
+    -d              Switch to debug mode, where everything is logged but nothing
+                    is actually done
+    -m [monthlydir] Select the monthly dir, where backups are copied.  Defaults
+                    to /backups/$(hostname)_backup/old_backups
+HERE
+}
+
+while getopts hb:dm: opt; do
+    case $opt in
+        b)  backupdir="$OPTARG"
+            ;;
+        d)  debug=1
+            ;;
+        m)  monthlydir="$OPTARG"
+            ;;
+        h)  usage
+            exit
+            ;;
+        ?)  usage
+            exit 2
+            ;;
+    esac
+done
+
+shift $((OPTIND - 1))
+
+# Calculate to find the year-month-day stamp for the last day of last month, per
+# the backup requirements
+datestamp=$(perl -e 'use Time::Local; my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime(time); my $firstday = timelocal(0, 0, 0, 1, $mon, $year); my $lastday = $firstday - (60 * 60 * 24); ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime($lastday); printf("%04d-%02d-%02d\n", $year + 1900, $mon + 1, $mday)')
+
+cd "$backupdir"
+
+log "Making directory $monthlydir if it does not exist"
+test -z "$debug" && mkdir -p "$monthlydir"
+
+for i in "$datestamp"_*-*; do
+    log "Copying directory $i into $monthlydir"
+    test -z "$debug" && cp -r "$i" "$monthlydir"
+done
