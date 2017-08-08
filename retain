@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-# Copyright © 2016 Taylor C. Richberger <tcr@absolute-performance.com>,
+# Copyright © 2016-2017 Taylor C. Richberger <tcr@absolute-performance.com>,
 # Absolute Performance, Inc.
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -104,35 +104,46 @@ sub main
 sub markretains($$$$\%\%)
 {
     my ($totalkeep, $spacing, $earliest, $latest, $files, $retain) = @_;
-    my $current = $latest;
-    my $keeps = 0;
+    my @keepfiles;
     my $day = 60 * 60 * 24;
-    while ($totalkeep > $keeps)
-    {
-        # Go back by $spacing days if a file is found, otherwise iterate back
-        # until you find the file you want
-        if (exists($files->{$current->year}{$current->mon}{$current->mday}))
-        {
+    $earliest -= $day;
+    $latest += $day;
+    my $current = $earliest;
+    my $keeps = 0;
+    while ($current <= $latest) {
+        # Get all files matching skip from earliest to latest, and then flip
+        # them to trim
+        if (exists($files->{$current->year}{$current->mon}{$current->mday})) {
             ++$keeps;
-            $retain->{$files->{$current->year}{$current->mon}{$current->mday}} = undef;
-            $current -= $day * $spacing;
+            push(@keepfiles, $files->{$current->year}{$current->mon}{$current->mday});
+
+            $current += $day * $spacing;
         } else
         {
-            $current -= $day;
+            $current += $day;
         }
-        # Kick out if there are no earlier files, otherwise this will loop
-        # forever.  Note that this script will run horribly if you have bum
-        # files that say they are hundreds of years old or anything like that
-        if ($current < $earliest)
-        {
+    }
 
-            # If we went past the earliest without getting all files, just mark the earliest to keep regardless
-            if (($totalkeep > $keeps) && exists($files->{$earliest->year}{$earliest->mon}{$earliest->mday}))
-            {
-                $retain->{$files->{$earliest->year}{$earliest->mon}{$earliest->mday}} = undef;
-            }
-            last;
+    # Reverse to keep end elements
+    @keepfiles = reverse(@keepfiles);
+    splice(@keepfiles, $totalkeep);
+
+    for my $file (@keepfiles) {
+        $retain->{$file} = undef;
+    }
+
+    $current = $earliest;
+    # If we went past the earliest without getting all files, just mark the earliest to keep regardless
+    while ($totalkeep > $keeps) {
+        if (exists($files->{$current->year}{$current->mon}{$current->mday})) {
+            ++$keeps;
+            $retain->{$files->{$current->year}{$current->mon}{$current->mday}} = undef;
+            # Remove so it can't be considered for other items
         }
+
+        $current += $day;
+
+        last if ($current > $latest);
     }
 }
 
@@ -142,11 +153,11 @@ sub markretains($$$$\%\%)
 
 =head1 NAME
 
-retain
+retain version 1.0.0
 
 =head1 SYNOPSIS
 
-migratekeys [OPTIONS] {FILEFORMAT}
+retain [OPTIONS] {FILEFORMAT}
 
 =head1 OPTIONS
 
@@ -191,7 +202,7 @@ against the retention scheme, and output those to standard output
 
 =head1 LICENSE
 
-Copyright © 2016 Taylor C. Richberger <tcr@absolute-performance.com>,
+Copyright © 2016-2017 Taylor C. Richberger <tcr@absolute-performance.com>,
 Absolute Performance, Inc.
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
