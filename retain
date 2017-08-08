@@ -125,8 +125,10 @@ sub markretains($$$$\%\%)
     }
 
     # Reverse to keep end elements
-    @keepfiles = reverse(@keepfiles);
-    splice(@keepfiles, $totalkeep);
+    if (scalar(@keepfiles) > $totalkeep) {
+        @keepfiles = reverse(@keepfiles);
+        splice(@keepfiles, $totalkeep);
+    }
 
     for my $file (@keepfiles) {
         $retain->{$file} = undef;
@@ -153,7 +155,7 @@ sub markretains($$$$\%\%)
 
 =head1 NAME
 
-retain version 1.0.0
+retain version 1.0.1
 
 =head1 SYNOPSIS
 
