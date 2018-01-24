@@ -20,7 +20,7 @@ use Pod::Usage;
 use Getopt::Std;
 use Time::Piece;
 
-sub markretains($$$$\%\%);
+sub markretains($$$$\%\%$);
 
 sub main;
 exit main();
@@ -32,7 +32,7 @@ sub main
         m => 0,
         d => 0,
     );
-    if (not getopts('w:m:d:hk', \%opts))
+    if (not getopts('cw:m:d:hk', \%opts))
     {
         pod2usage({-verbose => 1, -exitval => 1, -output => \*STDERR});
     }
@@ -76,9 +76,9 @@ sub main
     # The basic logic is that it marks files from %files to retain into the
     # %retain hash.  These are checked against %all to get total keeps and
     # removes
-    markretains($opts{d}, 1, $earliest, $latest, %files, %retain);
-    markretains($opts{w}, 7, $earliest, $latest, %files, %retain);
-    markretains($opts{m}, 28, $earliest, $latest, %files, %retain);
+    markretains($opts{d}, 1, $earliest, $latest, %files, %retain, $opts{c});
+    markretains($opts{w}, 7, $earliest, $latest, %files, %retain, $opts{c});
+    markretains($opts{m}, 28, $earliest, $latest, %files, %retain, $opts{c});
     my @removes;
     my @keeps;
     for my $name (keys(%all))
@@ -101,15 +101,21 @@ sub main
     return 0;
 }
 
-sub markretains($$$$\%\%)
+sub markretains($$$$\%\%$)
 {
-    my ($totalkeep, $spacing, $earliest, $latest, $files, $retain) = @_;
+    my ($totalkeep, $spacing, $earliest, $latest, $files, $retain, $conservative) = @_;
     my @keepfiles;
     my $day = 60 * 60 * 24;
     $earliest -= $day;
     $latest += $day;
     my $current = $earliest;
     my $keeps = 0;
+
+    # The algorithm here is relatively simple.  Using the spacing, mark each
+    # file in the set from earliest to latest.  Splice that to only the most
+    # current files in the set matching the number to keep.  If liberal
+    # retention is desired, also mark the oldest files iteratively to hit the
+    # total number of kept items.
     while ($current <= $latest) {
         # Get all files matching skip from earliest to latest, and then flip
         # them to trim
@@ -134,18 +140,20 @@ sub markretains($$$$\%\%)
         $retain->{$file} = undef;
     }
 
-    $current = $earliest;
-    # If we went past the earliest without getting all files, just mark the earliest to keep regardless
-    while ($totalkeep > $keeps) {
-        if (exists($files->{$current->year}{$current->mon}{$current->mday})) {
-            ++$keeps;
-            $retain->{$files->{$current->year}{$current->mon}{$current->mday}} = undef;
-            # Remove so it can't be considered for other items
+    if (not $conservative) {
+        $current = $earliest;
+        # If we went past the earliest without getting all files, just mark the earliest to keep regardless
+        while ($totalkeep > $keeps) {
+            if (exists($files->{$current->year}{$current->mon}{$current->mday})) {
+                ++$keeps;
+                $retain->{$files->{$current->year}{$current->mon}{$current->mday}} = undef;
+                # Remove so it can't be considered for other items
+            }
+
+            $current += $day;
+
+            last if ($current > $latest);
         }
-
-        $current += $day;
-
-        last if ($current > $latest);
     }
 }
 
@@ -155,7 +163,7 @@ sub markretains($$$$\%\%)
 
 =head1 NAME
 
-retain version 1.0.1
+retain version 1.1.0
 
 =head1 SYNOPSIS
 
@@ -176,6 +184,17 @@ Number of weeklies to keep
 =item C<-m> I<amount>
 
 Number of monthlies to keep
+
+=item C<-c>
+
+Conservative retention.
+
+By default retain saves files liberally, if all of a schedule's files are marked
+(such as -w 7, but there are only 4 weeks), it will mark older files
+incrementally until the total number of files is kept (so given -w 7 with 4
+weeks of backups, it will take the 4 weeklies, and also keep the 3 oldest
+backups in the set).  This option will reverse this behavior and only literally
+retain on the schedule.
 
 =item C<-h>
 
