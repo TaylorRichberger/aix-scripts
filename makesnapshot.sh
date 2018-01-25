@@ -111,3 +111,5 @@ recreatevg -y "$vgname" -l/etc/"$vgname".map -L"$tempmount" "$disk" || die 'Coul
 chfs -m"$mount" "$tempdata" || die 'Failed chfs'
 fsck -y "$mount" || die 'Failed fsck'
 mount "$mount" || die 'Could not mount'
+
+log "Finished refreshing snapshot onto mount $mount"
