@@ -2,7 +2,7 @@
 use warnings;
 use strict;
 
-our $VERSION = '1.1.0';
+our $VERSION = '1.1.1';
 
 use Getopt::Long;
 use Pod::Usage;
@@ -64,7 +64,7 @@ sub main {
     # Effectively, this selects the latest first-of-month directory which
     # contains a 'data' member.
     my $latestbackupdir = (sort({$b cmp $a} 
-            grep({$_ =~ m/^\d{4}-\d{2}-$daypattern/ and dircontains("$backupdir/$_", $innerfile) and not -l "$backupdir/$_"} @entries))
+            grep({$_ =~ m/^\d{4}-\d{2}-(?:$daypattern)/ and dircontains("$backupdir/$_", $innerfile) and not -l "$backupdir/$_"} @entries))
         )[0];
 
     if (not defined($latestbackupdir)) {
@@ -88,7 +88,7 @@ sub main {
         opendir(my $dir, $fullbackupdir) or die("Can't open directory $fullbackupdir: $!");
         while (my $file = readdir($dir)) {
             next if ($file =~ m/^\.+$/ or $file eq 'data');
-            if ($execute->('cp', '-r', "$fullbackupdir/$file", "$fullmonthlydir/$file") != 0) {
+            if ($execute->('cp', '-pr', "$fullbackupdir/$file", "$fullmonthlydir/$file") != 0) {
                 die("Could not copy file $file");
             }
         }
