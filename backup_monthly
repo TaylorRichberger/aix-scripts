@@ -2,7 +2,7 @@
 use warnings;
 use strict;
 
-our $VERSION = '0.0.1';
+our $VERSION = '1.1.0';
 
 use Getopt::Long;
 use Pod::Usage;
@@ -18,12 +18,16 @@ sub main {
     Getopt::Long::Configure('bundling', 'no_auto_abbrev', 'gnu_compat', 'no_ignore_case', 'auto_version');
     my $backupdir;
     my $monthlydir;
+    my $daypattern = '01';
+    my $innerfile = 'data';
     my $debug = 0;
     my $help = 0;
 
     if (not GetOptions(
         'backupdir|b=s' => \$backupdir,
         'monthlydir|m=s' => \$monthlydir,
+        'daypattern|D=s' => \$daypattern,
+        'innerfile|i=s' => \$innerfile,
         'debug|d!' => \$debug,
         'help|h' => \$help) or
         not (defined($backupdir) and defined($monthlydir))) {
@@ -60,7 +64,7 @@ sub main {
     # Effectively, this selects the latest first-of-month directory which
     # contains a 'data' member.
     my $latestbackupdir = (sort({$b cmp $a} 
-            grep({$_ =~ m/^\d{4}-\d{2}-01/ and dircontains("$backupdir/$_", 'data') and not -l "$backupdir/$_"} @entries))
+            grep({$_ =~ m/^\d{4}-\d{2}-$daypattern/ and dircontains("$backupdir/$_", $innerfile) and not -l "$backupdir/$_"} @entries))
         )[0];
 
     if (not defined($latestbackupdir)) {
@@ -90,14 +94,18 @@ sub main {
         }
     }
 
-    &log('Tarring data');
-    if ($execute->("tar -cvf- -C \"$fullbackupdir\" data 2>\"$fullmonthlydir/data.list\" | gzip -c - >\"$fullmonthlydir/data.tar.gz\"") != 0) {
-        die("Could not tar data");
-    }
+    if (-d "$fullbackupdir/data") {
+        &log('Tarring data');
+        if ($execute->("tar -cvf- -C \"$fullbackupdir\" data 2>\"$fullmonthlydir/data.list\" | gzip -c - >\"$fullmonthlydir/data.tar.gz\"") != 0) {
+            die("Could not tar data");
+        }
 
-    &log('Compressing file list');
-    if ($execute->("gzip \"$fullmonthlydir/data.list\"") != 0) {
-        die("Could not compress data.list");
+        &log('Compressing file list');
+        if ($execute->("gzip \"$fullmonthlydir/data.list\"") != 0) {
+            die("Could not compress data.list");
+        }
+    } else {
+        &log("No 'data' dir in $fullbackupdir");
     }
 
     &log('Finished');
@@ -148,6 +156,14 @@ print all messages.
 
 Select the backup dir of monthlies, where the monthly should be dropped
 
+=item B<-D>, B<--daypattern> I<daypattern>
+
+Select the day pattern to match dirs on.
+
+=item B<-i>, B<--innerfile> I<innerfile>
+
+Chose the inner file to match, if any.
+
 =back
 
 =head1 DESCRIPTION
@@ -165,7 +181,7 @@ in through /bin/tar and /bin/gzip.
 
 Written by Taylor C. Richberger <tcr@absolute-performance.com>
 
-Copyright © 2017 Absolute Performance Inc <csteam@absolute-performance.com>.
+Copyright © 2017-2018 Absolute Performance Inc <csteam@absolute-performance.com>.
 All rights reserved.
 This is proprietary software.
 No warranty, explicit or implicit, provided.
