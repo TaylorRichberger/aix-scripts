@@ -41,7 +41,7 @@ sub main {
 
     # Echo a line of code and execute it, or do nothing if debug is set.
     my $execute = sub {
-        &log('$ ' . join(' ', @_));
+        log('$ ' . join(' ', @_));
         if ($debug) {
             return 0;
         } else {
@@ -56,7 +56,7 @@ sub main {
         @entries = readdir($dir);
     }
 
-    &log('Using directory set containing', join(', ', @entries));
+    log('Using directory set containing', join(', ', @entries));
 
     # Trim the files to ones with a datestamp specifying the first, which
     # contain "data" directories, and aren't symlinks.  Sort them in reverse,
@@ -71,7 +71,7 @@ sub main {
         die("Could not find viable backup directory");
     }
 
-    &log('Filtered to', $latestbackupdir, 'as a directory to use');
+    log('Filtered to', $latestbackupdir, 'as a directory to use');
 
     my $fullbackupdir = "$backupdir/$latestbackupdir";
     my $fullmonthlydir = "$monthlydir/$latestbackupdir";
@@ -81,7 +81,7 @@ sub main {
     }
 
     {
-        &log('Copying non-data files from', $fullbackupdir, 'to', $fullmonthlydir);
+        log('Copying non-data files from', $fullbackupdir, 'to', $fullmonthlydir);
 
         # Copy everything but data ver-batim, as all of that should be
         # compressed already.
@@ -95,20 +95,23 @@ sub main {
     }
 
     if (-d "$fullbackupdir/data") {
-        &log('Tarring data');
-        if ($execute->("tar -cvf- -C \"$fullbackupdir\" data 2>\"$fullmonthlydir/data.list\" | gzip -c - >\"$fullmonthlydir/data.tar.gz\"") != 0) {
+        log('Compressing data');
+        # AIX tar has stupid bugs, like auto-truncating files on extraction, and
+        # probably also archival, so we have to use backup here, because we
+        # can't assume that the system will have GNU tar available. 
+        if ($execute->("cd '$fullbackupdir/data' && find . | tee '$fullmonthlydir/data.list' | backup -iq -f - | gzip -c - >'$fullmonthlydir/data.backup.gz'") != 0) {
             die("Could not tar data");
         }
 
-        &log('Compressing file list');
-        if ($execute->("gzip \"$fullmonthlydir/data.list\"") != 0) {
+        log('Compressing file list');
+        if ($execute->("gzip '$fullmonthlydir/data.list'") != 0) {
             die("Could not compress data.list");
         }
     } else {
-        &log("No 'data' dir in $fullbackupdir");
+        log("No 'data' dir in $fullbackupdir");
     }
 
-    &log('Finished');
+    log('Finished');
 
     return 0;
 }
@@ -181,7 +184,7 @@ in through /bin/tar and /bin/gzip.
 
 Written by Taylor C. Richberger <tcr@absolute-performance.com>
 
-Copyright © 2017-2018 Absolute Performance Inc <csteam@absolute-performance.com>.
+Copyright © 2017-2018, 2021 Absolute Performance Inc <csteam@absolute-performance.com>.
 All rights reserved.
 This is proprietary software.
 No warranty, explicit or implicit, provided.
