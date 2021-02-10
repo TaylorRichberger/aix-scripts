@@ -41,7 +41,8 @@ sub main {
 
     # Echo a line of code and execute it, or do nothing if debug is set.
     my $execute = sub {
-        log('$ ' . join(' ', @_));
+        # Need the & to disambiguate between our log and perl's log functions
+        &log('$ ' . join(' ', @_));
         if ($debug) {
             return 0;
         } else {
@@ -56,7 +57,7 @@ sub main {
         @entries = readdir($dir);
     }
 
-    log('Using directory set containing', join(', ', @entries));
+    &log('Using directory set containing', join(', ', @entries));
 
     # Trim the files to ones with a datestamp specifying the first, which
     # contain "data" directories, and aren't symlinks.  Sort them in reverse,
@@ -71,7 +72,7 @@ sub main {
         die("Could not find viable backup directory");
     }
 
-    log('Filtered to', $latestbackupdir, 'as a directory to use');
+    &log('Filtered to', $latestbackupdir, 'as a directory to use');
 
     my $fullbackupdir = "$backupdir/$latestbackupdir";
     my $fullmonthlydir = "$monthlydir/$latestbackupdir";
@@ -81,7 +82,7 @@ sub main {
     }
 
     {
-        log('Copying non-data files from', $fullbackupdir, 'to', $fullmonthlydir);
+        &log('Copying non-data files from', $fullbackupdir, 'to', $fullmonthlydir);
 
         # Copy everything but data ver-batim, as all of that should be
         # compressed already.
@@ -95,23 +96,23 @@ sub main {
     }
 
     if (-d "$fullbackupdir/data") {
-        log('Compressing data');
+        &log('Compressing data');
         # AIX tar has stupid bugs, like auto-truncating files on extraction, and
         # probably also archival, so we have to use backup here, because we
         # can't assume that the system will have GNU tar available. 
         if ($execute->("cd '$fullbackupdir/data' && find . | tee '$fullmonthlydir/data.list' | backup -iq -f - | gzip -c - >'$fullmonthlydir/data.backup.gz'") != 0) {
-            die("Could not tar data");
+            die("Could not archive data");
         }
 
-        log('Compressing file list');
+        &log('Compressing file list');
         if ($execute->("gzip '$fullmonthlydir/data.list'") != 0) {
             die("Could not compress data.list");
         }
     } else {
-        log("No 'data' dir in $fullbackupdir");
+        &log("No 'data' dir in $fullbackupdir");
     }
 
-    log('Finished');
+    &log('Finished');
 
     return 0;
 }
@@ -178,7 +179,7 @@ them to begin with %Y-%m-%d) and selects the latest one on the first day of the
 month.  In this way, it selects the latest first-of-month daily backup
 containing a /data directory.  It then creates a copy of the backup directory in
 the monthlydir, copying everything inside except for /data, which is compressed
-in through /bin/tar and /bin/gzip.
+in through backup and /bin/gzip.
 
 =head1 LICENSE
 
