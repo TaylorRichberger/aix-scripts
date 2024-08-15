@@ -1,0 +1,75 @@
+#!/usr/bin/env perl
+# Copyright ©2024 ProCern Technology Solutions.
+# Written by Taylor C. Richberger <taylor.richberger@procern.com>
+# This is proprietary software.  No warranty, explicit or implicit, provided.
+
+log() {
+    echo "[BACKUPMONTHLY INFO] $(date +"%Y-%m-%d %H-%M-%S"):" "$*"
+}
+
+usage() {
+  cat <<HERE
+$0 [options]
+    -h              Show this help
+    -t              Set today's day, as %Y-%m-%d
+HERE
+}
+
+today=$(date '+%Y-%m-%d')
+
+while getopts ht: opt; do
+  case $opt in
+    h)
+      usage
+      exit
+      ;;
+    t)
+      today="$OPTARG"
+      ;;
+    ?)
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+set -euf
+
+prod=har-cubs
+backups="/backups/${prod}_backup"
+monthlydestination="/backups2/${prod}_backup/monthlies"
+log Starting monthly backup
+
+mkdir -p "$monthlydestination"
+
+# Get the last day of the previous month
+endofmonth=$(
+perl -- - "$today" "$backups" <<"PERL"
+  use warnings;
+  use strict;
+
+  my ($today, $backups) = @ARGV;
+  my ($year, $month, $day) = ($today =~ /^(\d{4})-(\d{2})-(\d{2})$/);
+
+  # This will work even on January, where you'll end up with a before_this_date
+  # like 2024-00-99, which will end up getting the last day of 2023.
+  my $before_this_date = sprintf('%04d-%02d-%02d', $year, $month - 1, 99);
+  opendir(my $dir, $backups) or die('could not open directory');
+  my @matching_dates = grep(
+    {m/^\d{4}-\d{2}-\d{2}$/ && $_ lt $before_this_date}
+    readdir($dir)
+  );
+  closedir($dir);
+  if (!@matching_dates) {
+    die('no appropriate dates');
+  }
+  @matching_dates = sort(@matching_dates);
+  print($matching_dates[-1]);
+PERL
+)
+(
+  set -x
+  cp -hRp "$backups/$endofmonth" "$monthlydestination"
+)
+
+log Finished monthly backup

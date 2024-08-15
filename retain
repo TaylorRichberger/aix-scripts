@@ -31,8 +31,9 @@ sub main
         w => 0,
         m => 0,
         d => 0,
+        q => 0,
     );
-    if (not getopts('cw:m:d:hk', \%opts))
+    if (not getopts('cw:m:d:q:hk', \%opts))
     {
         pod2usage({-verbose => 1, -exitval => 1, -output => \*STDERR});
     }
@@ -79,6 +80,7 @@ sub main
     markretains($opts{d}, 1, $earliest, $latest, %files, %retain, $opts{c});
     markretains($opts{w}, 7, $earliest, $latest, %files, %retain, $opts{c});
     markretains($opts{m}, 28, $earliest, $latest, %files, %retain, $opts{c});
+    markretains($opts{q}, 90, $earliest, $latest, %files, %retain, $opts{c});
     my @removes;
     my @keeps;
     for my $name (keys(%all))
@@ -183,7 +185,11 @@ Number of weeklies to keep
 
 =item C<-m> I<amount>
 
-Number of monthlies to keep
+Number of monthlies (28 days) to keep
+
+=item C<-q> I<amount>
+
+Number of quarterlies (90 days) to keep
 
 =item C<-c>
 
